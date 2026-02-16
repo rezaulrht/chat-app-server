@@ -4,7 +4,7 @@ require("dotenv").config();
 const connectDB = async () => {
   try {
     const mongoURI =
-      process.env.MONGO_URI || "mongodb://localhost:27017/convox-chatapp";
+      process.env.MONGODB_URI || "mongodb://localhost:27017/convox-chatapp";
 
     await mongoose.connect(mongoURI);
 
