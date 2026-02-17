@@ -10,6 +10,10 @@ const authRoutes = require("./src/routes/auth.routes");
 const port = process.env.PORT || 3000;
 const app = express();
 const server = http.createServer(app);
+const passport = require("./src/config/passport");
+
+// Initialize Passport
+app.use(passport.initialize());
 
 // Initialize Socket.io with CORS
 const io = new Server(server, {

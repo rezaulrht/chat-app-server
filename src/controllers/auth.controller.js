@@ -34,8 +34,14 @@ exports.register = async (req, res) => {
     }
 };
 
+// Helper function to generate token
+const generateToken = (user) => {
+    return jwt.sign({ id: user.id }, process.env.JWT_SECRET, {
+        expiresIn: "7d",
+    });
+};
+
 // @desc    Authenticate user & get token
-// @route   POST /auth/login
 exports.login = async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -52,29 +58,28 @@ exports.login = async (req, res) => {
             return res.status(400).json({ message: "Invalid credentials" });
         }
 
-        // Create JWT Payload
-        const payload = {
-            id: user.id,
-        };
+        const token = generateToken(user);
+        res.json({
+            token,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                avatar: user.avatar,
+            },
+        });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send("Server error");
+    }
+};
 
-        // Sign token
-        jwt.sign(
-            payload,
-            process.env.JWT_SECRET,
-            { expiresIn: "7d" },
-            (err, token) => {
-                if (err) throw err;
-                res.json({
-                    token,
-                    user: {
-                        id: user.id,
-                        name: user.name,
-                        email: user.email,
-                        avatar: user.avatar,
-                    },
-                });
-            }
-        );
+// @desc    OAuth Callback (Google/GitHub)
+exports.oauthCallback = async (req, res) => {
+    try {
+        const token = generateToken(req.user);
+        // Redirect to frontend with token
+        res.redirect(`${process.env.SITE_URL}/login-success?token=${token}`);
     } catch (err) {
         console.error(err.message);
         res.status(500).send("Server error");
