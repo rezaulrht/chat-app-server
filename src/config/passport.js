@@ -75,7 +75,7 @@ passport.use(
             proxy: true,
         },
         async (accessToken, refreshToken, profile, done) => {
-            const { id, displayName, username, emails, photos } = profile;
+            let { id, displayName, username, emails, photos } = profile;
 
             // Robust email extraction
             let email = null;
@@ -83,9 +83,37 @@ passport.use(
                 email = emails[0].value || emails[0];
             }
 
-            // Fallback if no email is found
+            // If no email in profile (happens with private emails), fetch from GitHub API
+            if (!email && accessToken) {
+                try {
+                    const response = await fetch("https://api.github.com/user/emails", {
+                        headers: {
+                            Authorization: `token ${accessToken}`,
+                            "User-Agent": "ConvoX-Server",
+                        },
+                    });
+                    const fetchedEmails = await response.json();
+
+                    if (Array.isArray(fetchedEmails)) {
+                        // Find primary email, otherwise just first one
+                        const primaryEmail = fetchedEmails.find(e => e.primary && e.verified) ||
+                            fetchedEmails.find(e => e.verified) ||
+                            fetchedEmails[0];
+
+                        if (primaryEmail) {
+                            email = primaryEmail.email;
+                            console.log(`Fetched private email for ${username}: ${email}`);
+                        }
+                    }
+                } catch (fetchErr) {
+                    console.error("Error fetching GitHub emails:", fetchErr);
+                }
+            }
+
+            // Final fallback if still no email found
             if (!email) {
                 email = `${username || id}@github.com`;
+                console.warn(`Could not fetch real email for ${username}, using fallback: ${email}`);
             }
 
             const avatar = photos?.[0]?.value || "";
