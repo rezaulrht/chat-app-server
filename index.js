@@ -11,6 +11,7 @@ const port = process.env.PORT || 3000;
 const app = express();
 const server = http.createServer(app);
 const passport = require("./src/config/passport");
+const { connectRedis } = require("./src/config/redis");
 
 // Initialize Passport
 app.use(passport.initialize());
@@ -39,6 +40,9 @@ socketHandler(io);
 
 // Connect to database
 connectDB();
+
+// Connect redis
+connectRedis(); 
 
 server.listen(port, () => {
   console.log(`ConvoX Server is running on port ${port}`);
