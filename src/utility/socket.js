@@ -2,7 +2,7 @@
  * Socket.io event handlers and configuration
  */
 
-const { redisClient } = require("../config/redis");
+const { redisClient, getIsRedisConnected } = require("../config/redis");
 
 const socketHandler = (io) => {
   io.on("connection", (socket) => {
@@ -12,15 +12,21 @@ const socketHandler = (io) => {
     socket.on("test-message", async (data) => {
       console.log("Received test message:", data);
 
-      // Save test message in Redis
-      await redisClient.set(
-        `test:${socket.id}`,
-        JSON.stringify(data),
-        { EX: 60 } // auto expire after 60s
-      );
+      if (getIsRedisConnected()) {
+        try {
+          // Save test message in Redis
+          await redisClient.set(
+            `test:${socket.id}`,
+            JSON.stringify(data),
+            { EX: 60 } // auto expire after 60s
+          );
 
-      const check = await redisClient.get(`test:${socket.id}`);
-      console.log("Redis Stored Value:", check);
+          const check = await redisClient.get(`test:${socket.id}`);
+          console.log("Redis Stored Value:", check);
+        } catch (err) {
+          console.error("Redis Operation Error:", err);
+        }
+      }
 
       socket.emit("test-response", {
         message: "Message received!",
@@ -32,14 +38,20 @@ const socketHandler = (io) => {
     socket.on("broadcast", async (data) => {
       console.log("Broadcasting:", data);
 
-      // Store broadcast message in Redis list
-      await redisClient.rPush(
-        "broadcast:messages",
-        JSON.stringify(data)
-      );
+      if (getIsRedisConnected()) {
+        try {
+          // Store broadcast message in Redis list
+          await redisClient.rPush(
+            "broadcast:messages",
+            JSON.stringify(data)
+          );
 
-      // Keep only last 50 broadcasts
-      await redisClient.lTrim("broadcast:messages", -50, -1);
+          // Keep only last 50 broadcasts
+          await redisClient.lTrim("broadcast:messages", -50, -1);
+        } catch (err) {
+          console.error("Redis Operation Error:", err);
+        }
+      }
 
       io.emit("broadcast-message", data);
     });
@@ -48,8 +60,14 @@ const socketHandler = (io) => {
     socket.on("disconnect", async () => {
       console.log(`❌ User disconnected: ${socket.id}`);
 
-      // Optional: remove any stored test data
-      await redisClient.del(`test:${socket.id}`);
+      if (getIsRedisConnected()) {
+        try {
+          // Optional: remove any stored test data
+          await redisClient.del(`test:${socket.id}`);
+        } catch (err) {
+          console.error("Redis Operation Error:", err);
+        }
+      }
     });
   });
 };
