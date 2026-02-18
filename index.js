@@ -19,17 +19,41 @@ app.use(passport.initialize());
 // Initialize Socket.io with CORS
 const io = new Server(server, {
   cors: {
-    origin: "*", // In production, specify your frontend URL
+    origin: [process.env.SITE_URL, "http://localhost:3000"],
     methods: ["GET", "POST"],
+    credentials: true,
   },
 });
 
 // Middleware
-app.use(cors());
+app.set("trust proxy", 1); // Required for Render/Koyeb/Vercel
+app.use(cors({
+  origin: [process.env.SITE_URL, "http://localhost:3000"],
+  credentials: true,
+}));
 app.use(express.json());
 
 // Routes
 app.use("/auth", authRoutes);
+
+// Health check for Deployment (UptimeRobot/Heartbeat)
+const { getIsRedisConnected } = require("./src/config/redis");
+const mongoose = require("mongoose");
+
+app.get("/health", (req, res) => {
+  const dbStatus = mongoose.connection.readyState === 1 ? "Connected" : "Disconnected";
+  const redisStatus = getIsRedisConnected() ? "Connected" : "Disconnected";
+
+  const status = (dbStatus === "Connected") ? 200 : 500;
+
+  res.status(status).json({
+    status: "ok",
+    database: dbStatus,
+    redis: redisStatus,
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
 
 app.get("/", (req, res) => {
   res.send("Hey buddy no tension I am [ConvoX Server] Running...");
