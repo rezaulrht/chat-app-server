@@ -19,6 +19,9 @@ const socketHandler = (io) => {
         { EX: 60 } // auto expire after 60s
       );
 
+      const check = await redisClient.get(`test:${socket.id}`);
+      console.log("Redis Stored Value:", check);
+
       socket.emit("test-response", {
         message: "Message received!",
         data,
