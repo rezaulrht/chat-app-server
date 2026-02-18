@@ -2,11 +2,31 @@
  * Socket.io event handlers and configuration
  */
 
+const jwt = require("jsonwebtoken");
 const { redisClient, getIsRedisConnected } = require("../config/redis");
 
 const socketHandler = (io) => {
+  // --- Socket Authentication Middleware ---
+  // Runs before every connection is established.
+  // Client must pass the JWT as: socket = io(URL, { auth: { token: "..." } })
+  io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+
+    if (!token) {
+      return next(new Error("Authentication error: No token provided"));
+    }
+
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      socket.userId = decoded.id; // attach userId to the socket instance
+      next();
+    } catch (err) {
+      return next(new Error("Authentication error: Invalid token"));
+    }
+  });
+
   io.on("connection", (socket) => {
-    console.log(`✅ User connected: ${socket.id}`);
+    console.log(`✅ User connected: ${socket.id} (userId: ${socket.userId})`);
 
     // Test event listener
     socket.on("test-message", async (data) => {
@@ -55,11 +75,12 @@ const socketHandler = (io) => {
 
     // Handle disconnection
     socket.on("disconnect", async () => {
-      console.log(`❌ User disconnected: ${socket.id}`);
+      console.log(
+        `❌ User disconnected: ${socket.id} (userId: ${socket.userId})`,
+      );
 
       if (getIsRedisConnected()) {
         try {
-          // Optional: remove any stored test data
           await redisClient.del(`test:${socket.id}`);
         } catch (err) {
           console.error("Redis Operation Error:", err);
