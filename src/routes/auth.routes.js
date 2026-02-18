@@ -14,13 +14,27 @@ router.post("/login", login);
 router.get("/google", passport.authenticate("google", { scope: ["profile", "email"] }));
 
 // @route   GET /auth/google/callback
-router.get("/google/callback", passport.authenticate("google", { session: false }), oauthCallback);
+router.get(
+    "/google/callback",
+    passport.authenticate("google", {
+        session: false,
+        failureRedirect: `${process.env.SITE_URL}/login-error`
+    }),
+    oauthCallback
+);
 
 // @route   GET /auth/github
 router.get("/github", passport.authenticate("github", { scope: ["user:email"] }));
 
 // @route   GET /auth/github/callback
-router.get("/github/callback", passport.authenticate("github", { session: false }), oauthCallback);
+router.get(
+    "/github/callback",
+    passport.authenticate("github", {
+        session: false,
+        failureRedirect: `${process.env.SITE_URL}/login-error`
+    }),
+    oauthCallback
+);
 
 // @route   GET /auth/me
 router.get("/me", auth, me);
