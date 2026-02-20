@@ -7,6 +7,10 @@ const { redisClient, getIsRedisConnected } = require("../config/redis");
 const Message = require("../models/Message");
 const Conversation = require("../models/Conversation");
 
+const PRESENCE_TTL_SECONDS = 60;
+const PRESENCE_REFRESH_MS = 25000;
+const PRESENCE_GRACE_MS = 2000;
+
 const socketHandler = (io) => {
   // --- Socket Authentication Middleware ---
   io.use((socket, next) => {
@@ -28,12 +32,40 @@ const socketHandler = (io) => {
   io.on("connection", async (socket) => {
     console.log(`✅ User connected: ${socket.id} (userId: ${socket.userId})`);
 
+    let presenceInterval = null;
+
+    const refreshPresence = async (isInitialConnection = false) => {
+      if (!getIsRedisConnected()) return;
+
+      try {
+        const presenceKey = `presence:${socket.userId}`;
+        const now = Date.now().toString();
+        
+        // Check if user was previously offline
+        const wasOnline = await redisClient.exists(presenceKey);
+        
+        // Set or update presence
+        await redisClient.set(presenceKey, now, { EX: PRESENCE_TTL_SECONDS });
+        
+        // Emit presence update if this is initial connection or user was offline
+        if (isInitialConnection || !wasOnline) {
+          io.emit("presence:update", { userId: socket.userId, online: true });
+          console.log(`Presence:update emitted for user ${socket.userId} - ONLINE`);
+        }
+      } catch (err) {
+        console.error("Redis presence refresh error:", err);
+      }
+    };
+
     // Store userId -> socketId mapping in Redis so we can route messages
     if (getIsRedisConnected()) {
       try {
         await redisClient.set(`socket:${socket.userId}`, socket.id, {
           EX: 86400,
         });
+        // Pass true to indicate this is initial connection
+        await refreshPresence(true);
+        presenceInterval = setInterval(() => refreshPresence(false), PRESENCE_REFRESH_MS);
       } catch (err) {
         console.error("Redis set socket error:", err);
       }
@@ -104,6 +136,13 @@ const socketHandler = (io) => {
     );
 
     // ----------------------------------------------------------------
+    // presence:ping - client should send every ~25-30s to refresh TTL
+    // ----------------------------------------------------------------
+    socket.on("presence:ping", async () => {
+      await refreshPresence(false);
+    });
+
+    // ----------------------------------------------------------------
     // Handle disconnection — clean up Redis mapping
     // ----------------------------------------------------------------
     socket.on("disconnect", async () => {
@@ -111,11 +150,32 @@ const socketHandler = (io) => {
         `❌ User disconnected: ${socket.id} (userId: ${socket.userId})`,
       );
 
+      if (presenceInterval) {
+        clearInterval(presenceInterval);
+      }
+
       if (getIsRedisConnected()) {
         try {
           await redisClient.del(`socket:${socket.userId}`);
+          
+          // Store the disconnect time immediately
+          const disconnectTime = Date.now().toString();
+          await redisClient.set(`lastSeen:${socket.userId}`, disconnectTime, {
+            EX: 604800,
+          });
+          console.log(`Last seen set for user ${socket.userId}: ${disconnectTime}`);
+          
+          // Delete presence key immediately
+          await redisClient.del(`presence:${socket.userId}`);
+          
+          // Emit presence:update immediately to notify all clients
+          io.emit("presence:update", {
+            userId: socket.userId,
+            online: false,
+          });
+          console.log(`Presence:update emitted for user ${socket.userId} - OFFLINE`);
         } catch (err) {
-          console.error("Redis del socket error:", err);
+          console.error("Redis disconnect error:", err);
         }
       }
     });
