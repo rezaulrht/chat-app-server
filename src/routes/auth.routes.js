@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { register, login, me, oauthCallback } = require("../controllers/auth.controller");
+const { register, login, me, oauthCallback, verifyOTP, resendOTP } = require("../controllers/auth.controller");
 const auth = require("../middleware/auth.middleware");
 const passport = require("passport");
 
@@ -9,6 +9,12 @@ router.post("/register", register);
 
 // @route   POST /auth/login
 router.post("/login", login);
+
+// @route   POST /auth/verify-otp
+router.post("/verify-otp", verifyOTP);
+
+// @route   POST /auth/resend-otp
+router.post("/resend-otp", resendOTP);
 
 // @route   GET /auth/google
 router.get("/google", passport.authenticate("google", { scope: ["profile", "email"] }));

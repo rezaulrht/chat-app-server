@@ -1,6 +1,8 @@
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { sendOTP } = require("../utility/email");
+const { redisClient } = require("../config/redis");
 
 // @desc Register a new user
 exports.register = async (req, res) => {
@@ -9,6 +11,9 @@ exports.register = async (req, res) => {
 
     let user = await User.findOne({ email });
     if (user) {
+      if (!user.isVerified) {
+        return res.status(400).json({ message: "Account exists but is not verified. Please login to verify." });
+      }
       return res.status(400).json({ message: "User already exists" });
     }
 
@@ -19,13 +24,28 @@ exports.register = async (req, res) => {
       name,
       email,
       password: hashedPassword,
+      isVerified: false,
     });
 
     await user.save();
 
-    res.status(201).json({ message: "User registered successfully" });
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Store securely in Redis for 10 minutes (600 seconds)
+    if (redisClient && redisClient.isReady) {
+      await redisClient.set(`otp:${email.toLowerCase()}`, otp, { EX: 600 });
+    } else {
+      console.error("Redis is not ready! OTP cannot be saved.");
+      return res.status(500).json({ message: "Internal server error" });
+    }
+
+    // Send the email
+    await sendOTP(email, name, otp);
+
+    res.status(201).json({ message: "Verification OTP sent to your email" });
   } catch (err) {
-    console.error(err.message);
+    console.error("Register Error:", err.message);
     res.status(500).send("Server error");
   }
 };
@@ -57,6 +77,14 @@ exports.login = async (req, res) => {
 
       return res.status(403).json({
         message: `Account locked. Try again in ${remainingTime} minute(s).`,
+      });
+    }
+
+    // Block unverified users from logging in outright
+    if (!user.isVerified) {
+      return res.status(403).json({
+        message: "Account not verified",
+        code: "UNVERIFIED_ACCOUNT",
       });
     }
 
@@ -126,6 +154,90 @@ exports.me = async (req, res) => {
     res.json(user);
   } catch (err) {
     console.error(err.message);
+    res.status(500).send("Server error");
+  }
+};
+
+// @desc Verify OTP
+exports.verifyOTP = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ message: "Email and OTP are required" });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({ message: "User is already verified" });
+    }
+
+    // Check Redis for the expected OTP
+    const expectedOTP = await redisClient.get(`otp:${email.toLowerCase()}`);
+    if (!expectedOTP) {
+      return res.status(400).json({ message: "OTP expired or does not exist" });
+    }
+
+    if (expectedOTP !== otp.toString()) {
+      return res.status(400).json({ message: "Invalid OTP code" });
+    }
+
+    // Mark user as verified
+    user.isVerified = true;
+    await user.save();
+
+    // Clean up Redis
+    await redisClient.del(`otp:${email.toLowerCase()}`);
+
+    // Log the user in
+    const token = generateToken(user);
+    res.json({
+      message: "Email verified successfully",
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        avatar: user.avatar,
+      },
+    });
+  } catch (err) {
+    console.error("verifyOTP Error:", err.message);
+    res.status(500).send("Server error");
+  }
+};
+
+// @desc Resend OTP
+exports.resendOTP = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({ message: "User is already verified" });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    if (redisClient && redisClient.isReady) {
+      await redisClient.set(`otp:${email.toLowerCase()}`, otp, { EX: 600 });
+    } else {
+      return res.status(500).json({ message: "Internal server error" });
+    }
+
+    await sendOTP(user.email, user.name, otp);
+
+    res.status(200).json({ message: "New OTP sent to your email" });
+  } catch (err) {
+    console.error("resendOTP Error:", err.message);
     res.status(500).send("Server error");
   }
 };
