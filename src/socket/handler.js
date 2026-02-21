@@ -104,7 +104,7 @@ const socketHandler = (io) => {
 
     // ----------------------------------------------------------------
     // message:send
-    // Client emits: { conversationId, receiverId, text }
+    // Client emits: { conversationId, receiverId, text, tempId }
     // ----------------------------------------------------------------
     socket.on(
       "message:send",
@@ -112,10 +112,11 @@ const socketHandler = (io) => {
         if (!conversationId || !receiverId || !text?.trim()) return;
 
         try {
-          // 1. Save message to MongoDB
+          // 1. Save message to MongoDB (receiverId stored for receipt queries)
           const message = await Message.create({
             conversationId,
             sender: socket.userId,
+            receiverId,
             text: text.trim(),
             status: "sent",
           });
@@ -138,27 +139,47 @@ const socketHandler = (io) => {
             tempId,
             conversationId,
             sender: message.sender,
+            receiverId,
             text: message.text,
             status: message.status,
             createdAt: message.createdAt,
           };
 
-          // 4. Deliver to receiver if they are online
-          let receiverSocketId = null;
-          if (getIsRedisConnected()) {
-            try {
-              receiverSocketId = await redisClient.get(`socket:${receiverId}`);
-            } catch (err) {
-              console.error("Redis get receiver socket error:", err);
-            }
-          }
+          // 4. Ack back to ALL sender tabs (replaces optimistic bubble with real _id)
+          await emitToUser(socket.userId, "message:new", payload);
 
-          if (receiverSocketId) {
-            io.to(receiverSocketId).emit("message:receive", payload);
-          }
+          // 5. Auto-deliver if receiver is currently online
+          const receiverOnline = await isUserOnline(receiverId);
 
-          // 5. Ack back to sender with the saved message (so client gets real _id + createdAt)
-          socket.emit("message:delivered", payload);
+          if (receiverOnline) {
+            // 5a. Update status in DB
+            const deliveredAt = new Date();
+            await Message.findByIdAndUpdate(message._id, {
+              status: "delivered",
+              deliveredAt,
+            });
+
+            const deliveredPayload = {
+              messageId: message._id,
+              conversationId,
+              status: "delivered",
+              deliveredAt,
+            };
+
+            // 5b. Push the message to all receiver tabs (with delivered status)
+            await emitToUser(receiverId, "message:new", {
+              ...payload,
+              status: "delivered",
+              deliveredAt,
+            });
+
+            // 5c. Notify BOTH sides so ticks update on sender and receiver UIs
+            await emitToUser(socket.userId, "message:status", deliveredPayload);
+            await emitToUser(receiverId, "message:status", deliveredPayload);
+          } else {
+            // Receiver offline — push message:new so it lands when they reconnect
+            await emitToUser(receiverId, "message:new", payload);
+          }
         } catch (err) {
           console.error("message:send error:", err.message);
           socket.emit("message:error", { message: "Failed to send message" });
