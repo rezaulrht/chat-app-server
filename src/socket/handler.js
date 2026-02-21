@@ -40,32 +40,37 @@ const socketHandler = (io) => {
       try {
         const presenceKey = `presence:${socket.userId}`;
         const now = Date.now().toString();
-        
+
         // Check if user was previously offline
         const wasOnline = await redisClient.exists(presenceKey);
-        
+
         // Set or update presence
         await redisClient.set(presenceKey, now, { EX: PRESENCE_TTL_SECONDS });
-        
+
         // Emit presence update if this is initial connection or user was offline
         if (isInitialConnection || !wasOnline) {
           io.emit("presence:update", { userId: socket.userId, online: true });
-          console.log(`Presence:update emitted for user ${socket.userId} - ONLINE`);
+          console.log(
+            `Presence:update emitted for user ${socket.userId} - ONLINE`,
+          );
         }
       } catch (err) {
         console.error("Redis presence refresh error:", err);
       }
     };
 
-    // Store userId -> socketId mapping in Redis so we can route messages
+    // Store userId -> socketId in a Redis SET (supports multiple tabs/devices)
     if (getIsRedisConnected()) {
       try {
-        await redisClient.set(`socket:${socket.userId}`, socket.id, {
-          EX: 86400,
-        });
+        const socketsKey = `sockets:${socket.userId}`;
+        await redisClient.sAdd(socketsKey, socket.id);
+        await redisClient.expire(socketsKey, 86400);
         // Pass true to indicate this is initial connection
         await refreshPresence(true);
-        presenceInterval = setInterval(() => refreshPresence(false), PRESENCE_REFRESH_MS);
+        presenceInterval = setInterval(
+          () => refreshPresence(false),
+          PRESENCE_REFRESH_MS,
+        );
       } catch (err) {
         console.error("Redis set socket error:", err);
       }
@@ -156,24 +161,36 @@ const socketHandler = (io) => {
 
       if (getIsRedisConnected()) {
         try {
-          await redisClient.del(`socket:${socket.userId}`);
-          
-          // Store the disconnect time immediately
-          const disconnectTime = Date.now().toString();
-          await redisClient.set(`lastSeen:${socket.userId}`, disconnectTime, {
-            EX: 604800,
-          });
-          console.log(`Last seen set for user ${socket.userId}: ${disconnectTime}`);
-          
-          // Delete presence key immediately
-          await redisClient.del(`presence:${socket.userId}`);
-          
-          // Emit presence:update immediately to notify all clients
-          io.emit("presence:update", {
-            userId: socket.userId,
-            online: false,
-          });
-          console.log(`Presence:update emitted for user ${socket.userId} - OFFLINE`);
+          // Remove only this socket from the SET (other tabs remain)
+          await redisClient.sRem(`sockets:${socket.userId}`, socket.id);
+
+          // Only mark offline when no sockets remain for this user
+          const remainingSockets = await redisClient.sCard(
+            `sockets:${socket.userId}`,
+          );
+          if (remainingSockets === 0) {
+            const disconnectTime = Date.now().toString();
+            await redisClient.set(`lastSeen:${socket.userId}`, disconnectTime, {
+              EX: 604800,
+            });
+            console.log(
+              `Last seen set for user ${socket.userId}: ${disconnectTime}`,
+            );
+
+            await redisClient.del(`presence:${socket.userId}`);
+
+            io.emit("presence:update", {
+              userId: socket.userId,
+              online: false,
+            });
+            console.log(
+              `Presence:update emitted for user ${socket.userId} - OFFLINE`,
+            );
+          } else {
+            console.log(
+              `User ${socket.userId} still has ${remainingSockets} active socket(s) — staying online`,
+            );
+          }
         } catch (err) {
           console.error("Redis disconnect error:", err);
         }
