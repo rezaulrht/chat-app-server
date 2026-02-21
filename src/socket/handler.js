@@ -188,6 +188,87 @@ const socketHandler = (io) => {
     );
 
     // ----------------------------------------------------------------
+    // conversation:seen
+    // Client emits: { conversationId, lastSeenMessageId }
+    // Bulk-marks all unread messages up to lastSeenMessageId as "read",
+    // then notifies both participants so both UIs update their ticks.
+    // ----------------------------------------------------------------
+    socket.on(
+      "conversation:seen",
+      async ({ conversationId, lastSeenMessageId }) => {
+        if (!conversationId || !lastSeenMessageId) return;
+
+        try {
+          // Verify the requesting user is a participant
+          const conversation = await Conversation.findOne({
+            _id: conversationId,
+            participants: socket.userId,
+          });
+          if (!conversation) return;
+
+          // Get the pivot message's createdAt so we can do a range update
+          const pivotMessage = await Message.findOne({
+            _id: lastSeenMessageId,
+            conversationId,
+          });
+          if (!pivotMessage) return;
+
+          const seenAt = new Date();
+
+          // Bulk update: all messages sent TO this user, not yet "read", up to pivot
+          // "seen" implies "delivered" — both status and deliveredAt are set together
+          await Message.updateMany(
+            {
+              conversationId,
+              receiverId: socket.userId,
+              status: { $ne: "read" },
+              createdAt: { $lte: pivotMessage.createdAt },
+            },
+            {
+              $set: {
+                status: "read",
+                seenAt,
+                // Backfill deliveredAt for messages that skipped "delivered"
+              },
+            },
+          );
+
+          // Backfill deliveredAt on any that skipped straight from "sent" to "read"
+          await Message.updateMany(
+            {
+              conversationId,
+              receiverId: socket.userId,
+              status: "read",
+              deliveredAt: null,
+              createdAt: { $lte: pivotMessage.createdAt },
+            },
+            { $set: { deliveredAt: seenAt } },
+          );
+
+          const statusPayload = {
+            conversationId,
+            status: "read",
+            upToMessageId: lastSeenMessageId,
+            seenAt,
+          };
+
+          // Find the other participant (the original sender of those messages)
+          const senderId = conversation.participants
+            .map((p) => p.toString())
+            .find((id) => id !== socket.userId);
+
+          // Notify both sides — receiver's UI clears unread badge, sender's UI shows blue ticks
+          await emitToUser(socket.userId, "message:status", statusPayload);
+          if (senderId) {
+            await emitToUser(senderId, "message:status", statusPayload);
+          }
+        } catch (err) {
+          console.error("conversation:seen error:", err.message);
+        }
+      },
+    );
+
+    // ----------------------------------------------------------------
     // presence:ping - client should send every ~25-30s to refresh TTL
     // ----------------------------------------------------------------
     socket.on("presence:ping", async () => {
