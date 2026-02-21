@@ -225,3 +225,66 @@ exports.createConversation = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+// @desc    Mark messages in a conversation as seen (REST fallback)
+// @route   POST /api/chat/:conversationId/seen
+// @body    { lastSeenMessageId: ObjectId }
+exports.markConversationSeen = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { conversationId } = req.params;
+    const { lastSeenMessageId } = req.body;
+
+    if (!lastSeenMessageId) {
+      return res.status(400).json({ message: "lastSeenMessageId is required" });
+    }
+
+    // Verify the requesting user is a participant
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      participants: userId,
+    });
+
+    if (!conversation) {
+      return res
+        .status(403)
+        .json({ message: "Access denied to this conversation" });
+    }
+
+    // Find the last seen message to ensure it exists in this conversation
+    const lastSeenMessage = await Message.findOne({
+      _id: lastSeenMessageId,
+      conversationId,
+    });
+
+    if (!lastSeenMessage) {
+      return res.status(404).json({ message: "Message not found in this conversation" });
+    }
+
+    // Bulk update: mark all messages in conversation up to and including lastSeenMessageId as seen
+    // Only update messages received by the requesting user that aren't already "read"
+    const result = await Message.updateMany(
+      {
+        conversationId,
+        receiverId: userId,
+        status: { $ne: "read" },
+        createdAt: { $lte: lastSeenMessage.createdAt },
+      },
+      {
+        $set: {
+          status: "read",
+          seenAt: new Date(),
+        },
+      }
+    );
+
+    res.json({
+      message: "Messages marked as seen",
+      modifiedCount: result.modifiedCount,
+      upToMessageId: lastSeenMessageId,
+    });
+  } catch (err) {
+    console.error("markConversationSeen error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
