@@ -8,14 +8,14 @@ const { BrevoClient } = require("@getbrevo/brevo");
  * @param {string} otp_code - The 6-digit OTP code to send.
  */
 const sendOTP = async (to_email, to_name, otp_code) => {
-  try {
-    const brevo = new BrevoClient({
-      apiKey: process.env.BREVO_API_KEY,
-    });
+    try {
+        const brevo = new BrevoClient({
+            apiKey: process.env.BREVO_API_KEY,
+        });
 
-    const data = await brevo.transactionalEmails.sendTransacEmail({
-      subject: "Your Verification Code - ConvoX",
-      htmlContent: `
+        const data = await brevo.transactionalEmails.sendTransacEmail({
+            subject: "Your Verification Code - ConvoX",
+            htmlContent: `
       <!DOCTYPE html>
       <html lang="en">
       <head>
@@ -31,9 +31,7 @@ const sendOTP = async (to_email, to_name, otp_code) => {
                           <!-- Header -->
                           <tr>
                               <td style="padding: 40px 40px 20px; text-align: center;">
-                                  <h1 style="margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.5px;">
-                                      <span style="color: #ffffff;">Convo</span><span style="color: #13c8ec;">X</span>
-                                  </h1>
+                                  <img src="https://i.ibb.co/PG0X3Tbf/Convo-X-logo.png" alt="ConvoX Logo" style="height: 48px; width: auto; border: 0;" />
                               </td>
                           </tr>
                           
@@ -76,16 +74,16 @@ const sendOTP = async (to_email, to_name, otp_code) => {
       </body>
       </html>
     `,
-      sender: { name: "ConvoX", email: "rezaulrahaat@gmail.com" },
-      to: [{ email: to_email, name: to_name }],
-    });
+            sender: { name: "ConvoX", email: "rezaulrahaat@gmail.com" },
+            to: [{ email: to_email, name: to_name }],
+        });
 
-    console.log("OTP email sent successfully via Brevo.");
-    return data;
-  } catch (error) {
-    console.error("Error sending OTP email via Brevo:", error);
-    throw new Error("Failed to send OTP email.");
-  }
+        console.log("OTP email sent successfully via Brevo.");
+        return data;
+    } catch (error) {
+        console.error("Error sending OTP email via Brevo:", error);
+        throw new Error("Failed to send OTP email.");
+    }
 };
 
 module.exports = { sendOTP };
