@@ -20,8 +20,9 @@ exports.register = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // Generate fallback avatar if none provided
-    const finalAvatar = avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&color=fff&bold=true`;
+    // Generate fallback avatar if none provided (ui-avatars params: random background, 128px size, calculated length, rounded, bold)
+    const initialsLength = name.trim().split(/\s+/).length > 1 ? 2 : 1;
+    const finalAvatar = avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&size=128&length=${initialsLength}&rounded=true&bold=true`;
 
     user = new User({
       name,
