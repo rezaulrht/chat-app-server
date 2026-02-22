@@ -128,6 +128,15 @@ exports.login = async (req, res) => {
 
     // Block unverified users from logging in outright
     if (!user.isVerified) {
+      // Proactively send a new OTP if they try to login while unverified
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+      if (redisClient && redisClient.isReady) {
+        await redisClient.set(`otp:${email.toLowerCase()}`, otp, { EX: 600 });
+        // Send email (don't await to keep login response snappy, or await if you want to ensure delivery before reporting)
+        await sendOTP(user.email, user.name, otp);
+      }
+
       return res.status(403).json({
         message: "Account not verified",
         code: "UNVERIFIED_ACCOUNT",
