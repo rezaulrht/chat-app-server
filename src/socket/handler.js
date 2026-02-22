@@ -29,6 +29,32 @@ const socketHandler = (io) => {
     }
   });
 
+  // ----------------------------------------------------------------
+  // Helper: emit an event to ALL active sockets for a user (multi-tab/device)
+  // ----------------------------------------------------------------
+  const emitToUser = async (userId, event, data) => {
+    if (!getIsRedisConnected()) return;
+    try {
+      const socketIds = await redisClient.sMembers(`sockets:${userId}`);
+      for (const sid of socketIds) {
+        io.to(sid).emit(event, data);
+      }
+    } catch (err) {
+      console.error(`emitToUser error (${event}):`, err);
+    }
+  };
+
+  // Helper: returns true if the user has at least one active socket connection
+  const isUserOnline = async (userId) => {
+    if (!getIsRedisConnected()) return false;
+    try {
+      const count = await redisClient.sCard(`sockets:${userId}`);
+      return count > 0;
+    } catch (err) {
+      return false;
+    }
+  };
+
   io.on("connection", async (socket) => {
     console.log(`✅ User connected: ${socket.id} (userId: ${socket.userId})`);
 
@@ -40,32 +66,37 @@ const socketHandler = (io) => {
       try {
         const presenceKey = `presence:${socket.userId}`;
         const now = Date.now().toString();
-        
+
         // Check if user was previously offline
         const wasOnline = await redisClient.exists(presenceKey);
-        
+
         // Set or update presence
         await redisClient.set(presenceKey, now, { EX: PRESENCE_TTL_SECONDS });
-        
+
         // Emit presence update if this is initial connection or user was offline
         if (isInitialConnection || !wasOnline) {
           io.emit("presence:update", { userId: socket.userId, online: true });
-          console.log(`Presence:update emitted for user ${socket.userId} - ONLINE`);
+          console.log(
+            `Presence:update emitted for user ${socket.userId} - ONLINE`,
+          );
         }
       } catch (err) {
         console.error("Redis presence refresh error:", err);
       }
     };
 
-    // Store userId -> socketId mapping in Redis so we can route messages
+    // Store userId -> socketId in a Redis SET (supports multiple tabs/devices)
     if (getIsRedisConnected()) {
       try {
-        await redisClient.set(`socket:${socket.userId}`, socket.id, {
-          EX: 86400,
-        });
+        const socketsKey = `sockets:${socket.userId}`;
+        await redisClient.sAdd(socketsKey, socket.id);
+        await redisClient.expire(socketsKey, 86400);
         // Pass true to indicate this is initial connection
         await refreshPresence(true);
-        presenceInterval = setInterval(() => refreshPresence(false), PRESENCE_REFRESH_MS);
+        presenceInterval = setInterval(
+          () => refreshPresence(false),
+          PRESENCE_REFRESH_MS,
+        );
       } catch (err) {
         console.error("Redis set socket error:", err);
       }
@@ -73,7 +104,7 @@ const socketHandler = (io) => {
 
     // ----------------------------------------------------------------
     // message:send
-    // Client emits: { conversationId, receiverId, text }
+    // Client emits: { conversationId, receiverId, text, tempId }
     // ----------------------------------------------------------------
     socket.on(
       "message:send",
@@ -81,10 +112,11 @@ const socketHandler = (io) => {
         if (!conversationId || !receiverId || !text?.trim()) return;
 
         try {
-          // 1. Save message to MongoDB
+          // 1. Save message to MongoDB (receiverId stored for receipt queries)
           const message = await Message.create({
             conversationId,
             sender: socket.userId,
+            receiverId,
             text: text.trim(),
             status: "sent",
           });
@@ -107,30 +139,131 @@ const socketHandler = (io) => {
             tempId,
             conversationId,
             sender: message.sender,
+            receiverId,
             text: message.text,
             status: message.status,
             createdAt: message.createdAt,
           };
 
-          // 4. Deliver to receiver if they are online
-          let receiverSocketId = null;
-          if (getIsRedisConnected()) {
-            try {
-              receiverSocketId = await redisClient.get(`socket:${receiverId}`);
-            } catch (err) {
-              console.error("Redis get receiver socket error:", err);
-            }
-          }
+          // 4. Ack back to ALL sender tabs (replaces optimistic bubble with real _id)
+          await emitToUser(socket.userId, "message:new", payload);
 
-          if (receiverSocketId) {
-            io.to(receiverSocketId).emit("message:receive", payload);
-          }
+          // 5. Auto-deliver if receiver is currently online
+          const receiverOnline = await isUserOnline(receiverId);
 
-          // 5. Ack back to sender with the saved message (so client gets real _id + createdAt)
-          socket.emit("message:delivered", payload);
+          if (receiverOnline) {
+            // 5a. Update status in DB
+            const deliveredAt = new Date();
+            await Message.findByIdAndUpdate(message._id, {
+              status: "delivered",
+              deliveredAt,
+            });
+
+            const deliveredPayload = {
+              messageId: message._id,
+              conversationId,
+              status: "delivered",
+              deliveredAt,
+            };
+
+            // 5b. Push the message to all receiver tabs (with delivered status)
+            await emitToUser(receiverId, "message:new", {
+              ...payload,
+              status: "delivered",
+              deliveredAt,
+            });
+
+            // 5c. Notify BOTH sides so ticks update on sender and receiver UIs
+            await emitToUser(socket.userId, "message:status", deliveredPayload);
+            await emitToUser(receiverId, "message:status", deliveredPayload);
+          } else {
+            // Receiver offline — push message:new so it lands when they reconnect
+            await emitToUser(receiverId, "message:new", payload);
+          }
         } catch (err) {
           console.error("message:send error:", err.message);
           socket.emit("message:error", { message: "Failed to send message" });
+        }
+      },
+    );
+
+    // ----------------------------------------------------------------
+    // conversation:seen
+    // Client emits: { conversationId, lastSeenMessageId }
+    // Bulk-marks all unread messages up to lastSeenMessageId as "read",
+    // then notifies both participants so both UIs update their ticks.
+    // ----------------------------------------------------------------
+    socket.on(
+      "conversation:seen",
+      async ({ conversationId, lastSeenMessageId }) => {
+        if (!conversationId || !lastSeenMessageId) return;
+
+        try {
+          // Verify the requesting user is a participant
+          const conversation = await Conversation.findOne({
+            _id: conversationId,
+            participants: socket.userId,
+          });
+          if (!conversation) return;
+
+          // Get the pivot message's createdAt so we can do a range update
+          const pivotMessage = await Message.findOne({
+            _id: lastSeenMessageId,
+            conversationId,
+          });
+          if (!pivotMessage) return;
+
+          const seenAt = new Date();
+
+          // Bulk update: all messages sent TO this user, not yet "read", up to pivot
+          // "seen" implies "delivered" — both status and deliveredAt are set together
+          await Message.updateMany(
+            {
+              conversationId,
+              receiverId: socket.userId,
+              status: { $ne: "read" },
+              createdAt: { $lte: pivotMessage.createdAt },
+            },
+            {
+              $set: {
+                status: "read",
+                seenAt,
+                // Backfill deliveredAt for messages that skipped "delivered"
+              },
+            },
+          );
+
+          // Backfill deliveredAt on any that skipped straight from "sent" to "read"
+          await Message.updateMany(
+            {
+              conversationId,
+              receiverId: socket.userId,
+              status: "read",
+              deliveredAt: null,
+              createdAt: { $lte: pivotMessage.createdAt },
+            },
+            { $set: { deliveredAt: seenAt } },
+          );
+
+          const statusPayload = {
+            conversationId,
+            status: "read",
+            upToMessageId: lastSeenMessageId,
+            seenAt,
+          };
+
+          // Find the other participant (the original sender of those messages)
+          const senderId = conversation.participants
+            .map((p) => p.toString())
+            .find((id) => id !== socket.userId);
+
+          // Notify both sides — receiver's UI clears unread badge, sender's UI shows blue ticks
+          await emitToUser(socket.userId, "message:status", statusPayload);
+          if (senderId) {
+            await emitToUser(senderId, "message:status", statusPayload);
+          }
+        } catch (err) {
+          console.error("conversation:seen error:", err.message);
         }
       },
     );
@@ -156,24 +289,36 @@ const socketHandler = (io) => {
 
       if (getIsRedisConnected()) {
         try {
-          await redisClient.del(`socket:${socket.userId}`);
-          
-          // Store the disconnect time immediately
-          const disconnectTime = Date.now().toString();
-          await redisClient.set(`lastSeen:${socket.userId}`, disconnectTime, {
-            EX: 604800,
-          });
-          console.log(`Last seen set for user ${socket.userId}: ${disconnectTime}`);
-          
-          // Delete presence key immediately
-          await redisClient.del(`presence:${socket.userId}`);
-          
-          // Emit presence:update immediately to notify all clients
-          io.emit("presence:update", {
-            userId: socket.userId,
-            online: false,
-          });
-          console.log(`Presence:update emitted for user ${socket.userId} - OFFLINE`);
+          // Remove only this socket from the SET (other tabs remain)
+          await redisClient.sRem(`sockets:${socket.userId}`, socket.id);
+
+          // Only mark offline when no sockets remain for this user
+          const remainingSockets = await redisClient.sCard(
+            `sockets:${socket.userId}`,
+          );
+          if (remainingSockets === 0) {
+            const disconnectTime = Date.now().toString();
+            await redisClient.set(`lastSeen:${socket.userId}`, disconnectTime, {
+              EX: 604800,
+            });
+            console.log(
+              `Last seen set for user ${socket.userId}: ${disconnectTime}`,
+            );
+
+            await redisClient.del(`presence:${socket.userId}`);
+
+            io.emit("presence:update", {
+              userId: socket.userId,
+              online: false,
+            });
+            console.log(
+              `Presence:update emitted for user ${socket.userId} - OFFLINE`,
+            );
+          } else {
+            console.log(
+              `User ${socket.userId} still has ${remainingSockets} active socket(s) — staying online`,
+            );
+          }
         } catch (err) {
           console.error("Redis disconnect error:", err);
         }

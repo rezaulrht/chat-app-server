@@ -8,6 +8,7 @@ const {
   searchUsers,
   getLastSeen,
   getLastSeenBatch,
+  markConversationSeen,
 } = require("../controllers/chat.controller");
 
 // All routes require authentication
@@ -36,5 +37,10 @@ router.get("/last-seen/:userId", getLastSeen);
 // @route   POST /api/chat/last-seen
 // @desc    Get last seen times for multiple users
 router.post("/last-seen", getLastSeenBatch);
+
+// @route   POST /api/chat/:conversationId/seen
+// @desc    Mark messages in a conversation as seen (REST fallback for socket)
+// @body    { lastSeenMessageId: ObjectId }
+router.post("/:conversationId/seen", markConversationSeen);
 
 module.exports = router;
