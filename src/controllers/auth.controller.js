@@ -1,31 +1,97 @@
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { sendOTP } = require("../utility/email");
+const { redisClient } = require("../config/redis");
+const axios = require("axios");
+const FormData = require("form-data");
 
 // @desc Register a new user
 exports.register = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, avatar } = req.body;
 
     let user = await User.findOne({ email });
     if (user) {
+      if (!user.isVerified) {
+        return res.status(400).json({ message: "Account exists but is not verified. Please login to verify." });
+      }
       return res.status(400).json({ message: "User already exists" });
     }
 
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
+    let finalAvatar = avatar;
+
+    // Generate fallback avatar if none provided, but fetch it and upload to ImgBB
+    if (!finalAvatar) {
+      try {
+        const initialsUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&size=128&length=1&rounded=true&bold=true`;
+
+        // 1. Fetch the image buffer from ui-avatars
+        const imageResponse = await axios.get(initialsUrl, { responseType: 'arraybuffer' });
+        const imageBuffer = Buffer.from(imageResponse.data, 'binary');
+
+        // 2. Prepare FormData for ImgBB
+        const formData = new FormData();
+        const safeName = name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'user';
+        const safeEmailPrefix = email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+        const uniqueFilename = `${safeName}_${safeEmailPrefix}_avatar.png`;
+
+        formData.append('image', imageBuffer, { filename: uniqueFilename, contentType: 'image/png' });
+
+        // 3. Upload to ImgBB securely from backend
+        // Note: Using the frontend key if backend key isn't explicitly set, per user instructions it exists in frontend space but we can use it here if provided in server .env or just hardcoded, but we should rely on process.env.IMGBB_API_KEY
+        const imgbbKey = process.env.IMGBB_API_KEY;
+        if (!imgbbKey) {
+          console.warn("IMGBB_API_KEY is missing in backend .env. Defaulting to raw ui-avatars url.");
+          finalAvatar = initialsUrl;
+        } else {
+          const imgbbResponse = await axios.post(`https://api.imgbb.com/1/upload?key=${imgbbKey}`, formData, {
+            headers: formData.getHeaders(),
+          });
+
+          if (imgbbResponse.data && imgbbResponse.data.success) {
+            finalAvatar = imgbbResponse.data.data.display_url;
+          } else {
+            finalAvatar = initialsUrl; // fallback if ImgBB fails
+          }
+        }
+      } catch (avatarErr) {
+        console.error("Error generating/uploading fallback avatar:", avatarErr.message);
+        // Absolute fallback empty or default
+        finalAvatar = "";
+      }
+    }
+
     user = new User({
       name,
       email,
       password: hashedPassword,
+      avatar: finalAvatar,
+      isVerified: false,
     });
 
     await user.save();
 
-    res.status(201).json({ message: "User registered successfully" });
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Store securely in Redis for 10 minutes (600 seconds)
+    if (redisClient && redisClient.isReady) {
+      await redisClient.set(`otp:${email.toLowerCase()}`, otp, { EX: 600 });
+    } else {
+      console.error("Redis is not ready! OTP cannot be saved.");
+      return res.status(500).json({ message: "Internal server error" });
+    }
+
+    // Send the email
+    await sendOTP(email, name, otp);
+
+    res.status(201).json({ message: "Verification OTP sent to your email" });
   } catch (err) {
-    console.error(err.message);
+    console.error("Register Error:", err.message);
     res.status(500).send("Server error");
   }
 };
@@ -57,6 +123,14 @@ exports.login = async (req, res) => {
 
       return res.status(403).json({
         message: `Account locked. Try again in ${remainingTime} minute(s).`,
+      });
+    }
+
+    // Block unverified users from logging in outright
+    if (!user.isVerified) {
+      return res.status(403).json({
+        message: "Account not verified",
+        code: "UNVERIFIED_ACCOUNT",
       });
     }
 
@@ -126,6 +200,90 @@ exports.me = async (req, res) => {
     res.json(user);
   } catch (err) {
     console.error(err.message);
+    res.status(500).send("Server error");
+  }
+};
+
+// @desc Verify OTP
+exports.verifyOTP = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ message: "Email and OTP are required" });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({ message: "User is already verified" });
+    }
+
+    // Check Redis for the expected OTP
+    const expectedOTP = await redisClient.get(`otp:${email.toLowerCase()}`);
+    if (!expectedOTP) {
+      return res.status(400).json({ message: "OTP expired or does not exist" });
+    }
+
+    if (expectedOTP !== otp.toString()) {
+      return res.status(400).json({ message: "Invalid OTP code" });
+    }
+
+    // Mark user as verified
+    user.isVerified = true;
+    await user.save();
+
+    // Clean up Redis
+    await redisClient.del(`otp:${email.toLowerCase()}`);
+
+    // Log the user in
+    const token = generateToken(user);
+    res.json({
+      message: "Email verified successfully",
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        avatar: user.avatar,
+      },
+    });
+  } catch (err) {
+    console.error("verifyOTP Error:", err.message);
+    res.status(500).send("Server error");
+  }
+};
+
+// @desc Resend OTP
+exports.resendOTP = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({ message: "User is already verified" });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    if (redisClient && redisClient.isReady) {
+      await redisClient.set(`otp:${email.toLowerCase()}`, otp, { EX: 600 });
+    } else {
+      return res.status(500).json({ message: "Internal server error" });
+    }
+
+    await sendOTP(user.email, user.name, otp);
+
+    res.status(200).json({ message: "New OTP sent to your email" });
+  } catch (err) {
+    console.error("resendOTP Error:", err.message);
     res.status(500).send("Server error");
   }
 };

@@ -20,7 +20,7 @@ app.use(passport.initialize());
 // Initialize Socket.io with CORS
 const io = new Server(server, {
   cors: {
-    origin: [process.env.SITE_URL, "http://localhost:3000"],
+    origin: (origin, cb) => cb(null, true),
     methods: ["GET", "POST"],
     credentials: true,
   },

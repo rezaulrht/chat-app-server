@@ -38,6 +38,7 @@ passport.use(
                     if (!user.providerId) {
                         user.provider = "google";
                         user.providerId = id;
+                        user.isVerified = true;
                         if (!user.avatar) user.avatar = avatar;
                         await user.save();
                         console.log(`Updated legacy user ${user.email} with Google ID`);
@@ -52,6 +53,7 @@ passport.use(
                     avatar,
                     provider: "google",
                     providerId: id,
+                    isVerified: true,
                 });
 
                 await user.save();
@@ -129,6 +131,7 @@ passport.use(
                     if (!user.providerId) {
                         user.provider = "github";
                         user.providerId = id;
+                        user.isVerified = true;
                         if (!user.avatar) user.avatar = avatar;
                         await user.save();
                         console.log(`Updated legacy user ${user.email} with GitHub ID`);
@@ -143,6 +146,7 @@ passport.use(
                     avatar,
                     provider: "github",
                     providerId: id,
+                    isVerified: true,
                 });
 
                 await user.save();
