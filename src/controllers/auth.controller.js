@@ -3,6 +3,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { sendOTP } = require("../utility/email");
 const { redisClient } = require("../config/redis");
+const axios = require("axios");
+const FormData = require("form-data");
 
 // @desc Register a new user
 exports.register = async (req, res) => {
@@ -20,9 +22,48 @@ exports.register = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // Generate fallback avatar if none provided (ui-avatars params: random background, 128px size, calculated length, rounded, bold)
-    const initialsLength = name.trim().split(/\s+/).length > 1 ? 2 : 1;
-    const finalAvatar = avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&size=128&length=${initialsLength}&rounded=true&bold=true`;
+    let finalAvatar = avatar;
+
+    // Generate fallback avatar if none provided, but fetch it and upload to ImgBB
+    if (!finalAvatar) {
+      try {
+        const initialsUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&size=128&length=1&rounded=true&bold=true`;
+
+        // 1. Fetch the image buffer from ui-avatars
+        const imageResponse = await axios.get(initialsUrl, { responseType: 'arraybuffer' });
+        const imageBuffer = Buffer.from(imageResponse.data, 'binary');
+
+        // 2. Prepare FormData for ImgBB
+        const formData = new FormData();
+        const safeName = name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'user';
+        const safeEmailPrefix = email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+        const uniqueFilename = `${safeName}_${safeEmailPrefix}_avatar.png`;
+
+        formData.append('image', imageBuffer, { filename: uniqueFilename, contentType: 'image/png' });
+
+        // 3. Upload to ImgBB securely from backend
+        // Note: Using the frontend key if backend key isn't explicitly set, per user instructions it exists in frontend space but we can use it here if provided in server .env or just hardcoded, but we should rely on process.env.IMGBB_API_KEY
+        const imgbbKey = process.env.IMGBB_API_KEY;
+        if (!imgbbKey) {
+          console.warn("IMGBB_API_KEY is missing in backend .env. Defaulting to raw ui-avatars url.");
+          finalAvatar = initialsUrl;
+        } else {
+          const imgbbResponse = await axios.post(`https://api.imgbb.com/1/upload?key=${imgbbKey}`, formData, {
+            headers: formData.getHeaders(),
+          });
+
+          if (imgbbResponse.data && imgbbResponse.data.success) {
+            finalAvatar = imgbbResponse.data.data.display_url;
+          } else {
+            finalAvatar = initialsUrl; // fallback if ImgBB fails
+          }
+        }
+      } catch (avatarErr) {
+        console.error("Error generating/uploading fallback avatar:", avatarErr.message);
+        // Absolute fallback empty or default
+        finalAvatar = "";
+      }
+    }
 
     user = new User({
       name,
