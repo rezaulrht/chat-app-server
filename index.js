@@ -9,6 +9,7 @@ const authRoutes = require("./src/routes/auth.routes");
 const chatRoutes = require("./src/routes/chat.routes");
 const passport = require("./src/config/passport");
 const { connectRedis } = require("./src/config/redis");
+const resetRoutes = require("./src/routes/reset.routes");
 
 const port = process.env.PORT || 3000;
 const app = express();
@@ -37,6 +38,7 @@ app.use(express.json());
 // Routes
 app.use("/auth", authRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api", resetRoutes);
 
 // Health check for Deployment (UptimeRobot/Heartbeat)
 const { getIsRedisConnected } = require("./src/config/redis");

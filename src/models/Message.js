@@ -27,6 +27,14 @@ const messageSchema = new mongoose.Schema(
       trim: true,
       default: null,
     },
+
+    // ✅ NEW: Thread Reply Field
+    replyTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+    },
+
     status: {
       type: String,
       enum: ["sent", "delivered", "read"],
@@ -57,5 +65,8 @@ messageSchema.index({ conversationId: 1, _id: 1 });
 
 // Index for delivered/seen status queries: find undelivered or unseen messages
 messageSchema.index({ receiverId: 1, status: 1, createdAt: -1 });
+
+// NEW: Reply index
+messageSchema.index({ replyTo: 1 });
 
 module.exports = mongoose.model("Message", messageSchema);
