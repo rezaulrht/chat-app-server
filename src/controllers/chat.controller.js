@@ -42,18 +42,15 @@ exports.getLastSeenBatch = async (req, res) => {
 
     const result = {};
     for (const userId of userIds) {
-      // Check if user is currently online
       const isOnline = await redisClient.exists(`presence:${userId}`);
-      
+
       if (isOnline) {
-        // User is online
         result[userId] = { online: true, lastSeen: null };
       } else {
-        // User is offline, get last seen time
         const lastSeenTimestamp = await redisClient.get(`lastSeen:${userId}`);
-        result[userId] = { 
-          online: false, 
-          lastSeen: lastSeenTimestamp ? parseInt(lastSeenTimestamp) : null 
+        result[userId] = {
+          online: false,
+          lastSeen: lastSeenTimestamp ? parseInt(lastSeenTimestamp) : null,
         };
       }
     }
@@ -65,18 +62,14 @@ exports.getLastSeenBatch = async (req, res) => {
   }
 };
 
-// @desc    Search users by name or email (excludes the requesting user)
-// @route   GET /api/chat/users?q=<query>
+// @desc    Search users
 exports.searchUsers = async (req, res) => {
   try {
     const userId = req.user.id;
     const q = (req.query.q || "").trim();
 
-    if (!q) {
-      return res.json([]);
-    }
+    if (!q) return res.json([]);
 
-    // Case-insensitive partial match on name OR email, exclude self
     const users = await User.find({
       _id: { $ne: userId },
       $or: [
@@ -94,8 +87,7 @@ exports.searchUsers = async (req, res) => {
   }
 };
 
-// @desc    Get all conversations for the logged-in user
-// @route   GET /api/chat/conversations
+// @desc    Get all conversations
 exports.getConversations = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -106,7 +98,6 @@ exports.getConversations = async (req, res) => {
       .populate("participants", "name avatar email")
       .sort({ updatedAt: -1 });
 
-    // Shape each conversation: expose the other participant and lastMessage
     const result = conversations.map((conv) => {
       const other = conv.participants.find((p) => p._id.toString() !== userId);
       return {
@@ -124,8 +115,7 @@ exports.getConversations = async (req, res) => {
   }
 };
 
-// @desc    Get paginated message history for a conversation
-// @route   GET /api/chat/messages/:conversationId
+// @desc    Get paginated messages (THREAD SUPPORT ADDED)
 exports.getMessages = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -134,7 +124,6 @@ exports.getMessages = async (req, res) => {
     const limit = parseInt(req.query.limit) || 30;
     const skip = (page - 1) * limit;
 
-    // Verify the requesting user is a participant
     const conversation = await Conversation.findOne({
       _id: conversationId,
       participants: userId,
@@ -150,9 +139,15 @@ exports.getMessages = async (req, res) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .populate("sender", "name avatar");
+      .populate("sender", "name avatar")
+      .populate({
+        path: "replyTo",
+        populate: {
+          path: "sender",
+          select: "name avatar",
+        },
+      });
 
-    // Return in chronological order (oldest first)
     res.json(messages.reverse());
   } catch (err) {
     console.error("getMessages error:", err.message);
@@ -160,8 +155,72 @@ exports.getMessages = async (req, res) => {
   }
 };
 
-// @desc    Create or return an existing conversation with another user
-// @route   POST /api/chat/conversations
+// SEND MESSAGE WITH THREAD REPLY SUPPORT
+exports.sendMessage = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { conversationId, receiverId, text, replyTo } = req.body;
+
+    if (!conversationId || !receiverId || !text) {
+      return res.status(400).json({
+        message: "conversationId, receiverId and text are required",
+      });
+    }
+
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      participants: userId,
+    });
+
+    if (!conversation) {
+      return res.status(403).json({
+        message: "Access denied to this conversation",
+      });
+    }
+
+    // Reply validation
+    if (replyTo) {
+      const replyMessage = await Message.findOne({
+        _id: replyTo,
+        conversationId,
+      });
+
+      if (!replyMessage) {
+        return res.status(400).json({
+          message: "Invalid reply message",
+        });
+      }
+    }
+
+    const message = await Message.create({
+      conversationId,
+      sender: userId,
+      receiverId,
+      text,
+      replyTo: replyTo || null,
+    });
+
+    const populatedMessage = await Message.findById(message._id)
+      .populate("sender", "name avatar")
+      .populate({
+        path: "replyTo",
+        populate: {
+          path: "sender",
+          select: "name avatar",
+        },
+      });
+
+    conversation.lastMessage = text;
+    await conversation.save();
+
+    res.status(201).json(populatedMessage);
+  } catch (err) {
+    console.error("sendMessage error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// @desc    Create or return conversation
 exports.createConversation = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -177,14 +236,13 @@ exports.createConversation = async (req, res) => {
         .json({ message: "Cannot start a conversation with yourself" });
     }
 
-    // Check the target user exists
     const targetUser =
       await User.findById(participantId).select("name avatar email");
+
     if (!targetUser) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // Find existing conversation between these two users (order-independent)
     let conversation = await Conversation.findOne({
       participants: { $all: [userId, participantId], $size: 2 },
     }).populate("participants", "name avatar email");
@@ -202,7 +260,6 @@ exports.createConversation = async (req, res) => {
       });
     }
 
-    // Create new conversation
     conversation = await Conversation.create({
       participants: [userId, participantId],
     });
@@ -226,9 +283,7 @@ exports.createConversation = async (req, res) => {
   }
 };
 
-// @desc    Mark messages in a conversation as seen (REST fallback)
-// @route   POST /api/chat/:conversationId/seen
-// @body    { lastSeenMessageId: ObjectId }
+// @desc    Mark messages as seen
 exports.markConversationSeen = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -236,10 +291,11 @@ exports.markConversationSeen = async (req, res) => {
     const { lastSeenMessageId } = req.body;
 
     if (!lastSeenMessageId) {
-      return res.status(400).json({ message: "lastSeenMessageId is required" });
+      return res.status(400).json({
+        message: "lastSeenMessageId is required",
+      });
     }
 
-    // Verify the requesting user is a participant
     const conversation = await Conversation.findOne({
       _id: conversationId,
       participants: userId,
@@ -251,18 +307,17 @@ exports.markConversationSeen = async (req, res) => {
         .json({ message: "Access denied to this conversation" });
     }
 
-    // Find the last seen message to ensure it exists in this conversation
     const lastSeenMessage = await Message.findOne({
       _id: lastSeenMessageId,
       conversationId,
     });
 
     if (!lastSeenMessage) {
-      return res.status(404).json({ message: "Message not found in this conversation" });
+      return res.status(404).json({
+        message: "Message not found in this conversation",
+      });
     }
 
-    // Bulk update: mark all messages in conversation up to and including lastSeenMessageId as seen
-    // Only update messages received by the requesting user that aren't already "read"
     const result = await Message.updateMany(
       {
         conversationId,
@@ -275,7 +330,7 @@ exports.markConversationSeen = async (req, res) => {
           status: "read",
           seenAt: new Date(),
         },
-      }
+      },
     );
 
     res.json({
