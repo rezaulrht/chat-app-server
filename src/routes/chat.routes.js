@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const auth = require("../middleware/auth.middleware");
+
 const {
   getConversations,
   getMessages,
@@ -9,6 +10,7 @@ const {
   getLastSeen,
   getLastSeenBatch,
   markConversationSeen,
+  sendMessage,
 } = require("../controllers/chat.controller");
 
 // All routes require authentication
@@ -21,6 +23,11 @@ router.get("/conversations", getConversations);
 // @route   GET /api/chat/messages/:conversationId
 // @desc    Get paginated message history for a conversation
 router.get("/messages/:conversationId", getMessages);
+
+// NEW ROUTE FOR SENDING MESSAGE (THREAD REPLY SUPPORT)
+// @route   POST /api/chat/messages
+// @desc    Send message (supports replyTo)
+router.post("/messages", sendMessage);
 
 // @route   POST /api/chat/conversations
 // @desc    Create or return an existing conversation with another user
@@ -39,7 +46,7 @@ router.get("/last-seen/:userId", getLastSeen);
 router.post("/last-seen", getLastSeenBatch);
 
 // @route   POST /api/chat/:conversationId/seen
-// @desc    Mark messages in a conversation as seen (REST fallback for socket)
+// @desc    Mark messages in a conversation as seen
 // @body    { lastSeenMessageId: ObjectId }
 router.post("/:conversationId/seen", markConversationSeen);
 

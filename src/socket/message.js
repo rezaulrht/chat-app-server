@@ -10,11 +10,11 @@ const Conversation = require("../models/Conversation");
 const registerMessageHandlers = (socket, { emitToUser, isUserOnline }) => {
   // ----------------------------------------------------------------
   // message:send
-  // Client emits: { conversationId, receiverId, text, tempId }
+  // Client emits: { conversationId, receiverId, text, tempId, replyTo }
   // ----------------------------------------------------------------
   socket.on(
     "message:send",
-    async ({ conversationId, receiverId, text, tempId }) => {
+    async ({ conversationId, receiverId, text, tempId, replyTo }) => {
       if (!conversationId || !receiverId || !text?.trim()) return;
 
       try {
@@ -24,6 +24,7 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline }) => {
           sender: socket.userId,
           receiverId,
           text: text.trim(),
+          replyTo: replyTo || null,
           status: "sent",
         });
 
@@ -37,7 +38,14 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline }) => {
           updatedAt: message.createdAt,
         });
 
-        // 3. Populate sender info for the response payload
+        // 3. Populate replyTo and sender info for the response payload
+        if (message.replyTo) {
+          await message.populate({
+            path: "replyTo",
+            select: "text sender",
+            populate: { path: "sender", select: "name avatar" },
+          });
+        }
         await message.populate("sender", "name avatar");
 
         const payload = {
@@ -47,6 +55,7 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline }) => {
           sender: message.sender,
           receiverId,
           text: message.text,
+          replyTo: message.replyTo || null,
           status: message.status,
           createdAt: message.createdAt,
         };

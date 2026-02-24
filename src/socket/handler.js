@@ -55,7 +55,7 @@ const socketHandler = (io) => {
       }
     }
 
-    // Register domain-specific event handlers
+    // Delegate event handling to focused modules
     registerMessageHandlers(socket, helpers);
     registerConversationHandlers(socket, helpers);
     registerTypingHandlers(socket, helpers);
