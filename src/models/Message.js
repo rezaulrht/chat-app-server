@@ -19,8 +19,13 @@ const messageSchema = new mongoose.Schema(
     },
     text: {
       type: String,
-      required: true,
       trim: true,
+      default: null,
+    },
+    gifUrl: {
+      type: String,
+      trim: true,
+      default: null,
     },
 
     // ✅ NEW: Thread Reply Field
@@ -42,6 +47,11 @@ const messageSchema = new mongoose.Schema(
     seenAt: {
       type: Date,
       default: null,
+    },
+    reactions: {
+      type: Map,
+      of: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+      default: {},
     },
   },
   { timestamps: true },

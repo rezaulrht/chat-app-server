@@ -14,31 +14,32 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline }) => {
   // ----------------------------------------------------------------
   socket.on(
     "message:send",
-    async ({ conversationId, receiverId, text, tempId, replyTo }) => {
-      if (!conversationId || !receiverId || !text?.trim()) return;
+    async ({ conversationId, receiverId, text, gifUrl, tempId, replyTo }) => {
+      if (!conversationId || !receiverId) return;
+      if (!text?.trim() && !gifUrl) return;
 
       try {
-        // 1. Persist to MongoDB
-        const message = await Message.create({
+        const messageData = {
           conversationId,
           sender: socket.userId,
           receiverId,
-          text: text.trim(),
-          replyTo: replyTo || null,
           status: "sent",
-        });
+          replyTo: replyTo || null,
+        };
+        if (text?.trim()) messageData.text = text.trim();
+        if (gifUrl) messageData.gifUrl = gifUrl;
 
-        // 2. Update the conversation's lastMessage snapshot
+        const message = await Message.create(messageData);
+
         await Conversation.findByIdAndUpdate(conversationId, {
           lastMessage: {
-            text: text.trim(),
+            text: gifUrl ? "GIF" : text.trim(),
             sender: socket.userId,
             timestamp: message.createdAt,
           },
           updatedAt: message.createdAt,
         });
 
-        // 3. Populate replyTo and sender info for the response payload
         if (message.replyTo) {
           await message.populate({
             path: "replyTo",
@@ -55,19 +56,17 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline }) => {
           sender: message.sender,
           receiverId,
           text: message.text,
+          gifUrl: message.gifUrl,
           replyTo: message.replyTo || null,
           status: message.status,
           createdAt: message.createdAt,
         };
 
-        // 4. Ack back to ALL sender tabs (replaces the optimistic bubble)
         await emitToUser(socket.userId, "message:new", payload);
 
-        // 5. Auto-deliver if receiver is currently online
         const receiverOnline = await isUserOnline(receiverId);
 
         if (receiverOnline) {
-          // 5a. Update status in DB
           const deliveredAt = new Date();
           await Message.findByIdAndUpdate(message._id, {
             status: "delivered",
@@ -81,18 +80,15 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline }) => {
             deliveredAt,
           };
 
-          // 5b. Push the message to all receiver tabs (with delivered status)
           await emitToUser(receiverId, "message:new", {
             ...payload,
             status: "delivered",
             deliveredAt,
           });
 
-          // 5c. Notify BOTH sides so ticks update on sender and receiver UIs
           await emitToUser(socket.userId, "message:status", deliveredPayload);
           await emitToUser(receiverId, "message:status", deliveredPayload);
         } else {
-          // Receiver offline — the message will land when they reconnect
           await emitToUser(receiverId, "message:new", payload);
         }
       } catch (err) {
@@ -101,6 +97,49 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline }) => {
       }
     },
   );
+
+  socket.on("message:react", async ({ messageId, conversationId, emoji }) => {
+    if (!messageId || !conversationId || !emoji) return;
+
+    try {
+      const message = await Message.findById(messageId);
+      if (!message || message.conversationId.toString() !== conversationId) return;
+
+      const existingUsers = message.reactions?.get(emoji) || [];
+      const userIdStr = socket.userId.toString();
+      const idx = existingUsers.findIndex((id) => id.toString() === userIdStr);
+
+      if (idx > -1) {
+        existingUsers.splice(idx, 1);
+        if (existingUsers.length === 0) {
+          message.reactions.delete(emoji);
+        } else {
+          message.reactions.set(emoji, existingUsers);
+        }
+      } else {
+        message.reactions.set(emoji, [...existingUsers, socket.userId]);
+      }
+
+      await message.save();
+
+      const reactionsObj = {};
+      if (message.reactions) {
+        for (const [key, val] of message.reactions.entries()) {
+          reactionsObj[key] = val.map((id) => id.toString());
+        }
+      }
+
+      const payload = { messageId, conversationId, reactions: reactionsObj };
+      const conversation = await Conversation.findById(conversationId);
+      if (conversation) {
+        for (const pid of conversation.participants) {
+          await emitToUser(pid.toString(), "message:reacted", payload);
+        }
+      }
+    } catch (err) {
+      console.error("message:react error:", err.message);
+    }
+  });
 };
 
 module.exports = registerMessageHandlers;
