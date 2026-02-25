@@ -39,7 +39,8 @@ const registerTypingHandlers = (socket, { emitToUser }) => {
       });
     }, TYPING_AUTO_STOP_MS);
 
-    typingTimers.set(key, timer);
+    // Store both timer and receiverId so disconnect cleanup knows who to notify
+    typingTimers.set(key, { timer, receiverId });
   });
 
   // ----------------------------------------------------------------
@@ -52,7 +53,7 @@ const registerTypingHandlers = (socket, { emitToUser }) => {
     // Cancel the auto-stop timer — manual stop takes precedence
     const key = `${conversationId}:${socket.userId}`;
     if (typingTimers.has(key)) {
-      clearTimeout(typingTimers.get(key));
+      clearTimeout(typingTimers.get(key).timer);
       typingTimers.delete(key);
     }
 
@@ -62,6 +63,29 @@ const registerTypingHandlers = (socket, { emitToUser }) => {
       isTyping: false,
     });
   });
+
+  // ----------------------------------------------------------------
+  // cleanup — called on disconnect
+  // Cancels all active typing timers for this user and notifies receivers
+  // ----------------------------------------------------------------
+  const cleanup = async () => {
+    const userSuffix = `:${socket.userId}`;
+    for (const [key, { timer, receiverId }] of typingTimers) {
+      if (!key.endsWith(userSuffix)) continue;
+
+      clearTimeout(timer);
+      typingTimers.delete(key);
+
+      const conversationId = key.slice(0, -userSuffix.length);
+      await emitToUser(receiverId, "typing:update", {
+        conversationId,
+        userId: socket.userId,
+        isTyping: false,
+      });
+    }
+  };
+
+  return { cleanup };
 };
 
 module.exports = registerTypingHandlers;
