@@ -6,6 +6,8 @@
 
 const TYPING_AUTO_STOP_MS = 5000;
 
+const Conversation = require("../models/Conversation");
+
 // Map<"conversationId:userId", TimeoutHandle>
 // Module-level so it persists across all socket connections in this process.
 const typingTimers = new Map();
@@ -17,6 +19,13 @@ const registerTypingHandlers = (socket, { emitToUser }) => {
   // ----------------------------------------------------------------
   socket.on("typing:start", async ({ conversationId, receiverId } = {}) => {
     if (!conversationId || !receiverId) return;
+
+    // Security: ensure the sender is actually a participant of this conversation
+    const isParticipant = await Conversation.exists({
+      _id: conversationId,
+      participants: socket.userId,
+    });
+    if (!isParticipant) return;
 
     await emitToUser(receiverId, "typing:update", {
       conversationId,
