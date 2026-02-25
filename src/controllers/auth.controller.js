@@ -42,7 +42,6 @@ exports.register = async (req, res) => {
         formData.append('image', imageBuffer, { filename: uniqueFilename, contentType: 'image/png' });
 
         // 3. Upload to ImgBB securely from backend
-        // Note: Using the frontend key if backend key isn't explicitly set, per user instructions it exists in frontend space but we can use it here if provided in server .env or just hardcoded, but we should rely on process.env.IMGBB_API_KEY
         const imgbbKey = process.env.IMGBB_API_KEY;
         if (!imgbbKey) {
           console.warn("IMGBB_API_KEY is missing in backend .env. Defaulting to raw ui-avatars url.");

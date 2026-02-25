@@ -7,7 +7,7 @@
 const Message = require("../models/Message");
 const Conversation = require("../models/Conversation");
 
-const registerMessageHandlers = (socket, { emitToUser, isUserOnline }) => {
+const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
   // ----------------------------------------------------------------
   // message:send
   // Client emits: { conversationId, receiverId, text, tempId, replyTo }
@@ -130,12 +130,9 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline }) => {
       }
 
       const payload = { messageId, conversationId, reactions: reactionsObj };
-      const conversation = await Conversation.findById(conversationId);
-      if (conversation) {
-        for (const pid of conversation.participants) {
-          await emitToUser(pid.toString(), "message:reacted", payload);
-        }
-      }
+
+      // Broadcast to everyone in the conversation room (including the reactor)
+      io.to(`conv:${conversationId}`).emit("message:reacted", payload);
     } catch (err) {
       console.error("message:react error:", err.message);
     }

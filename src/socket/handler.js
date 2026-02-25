@@ -51,7 +51,7 @@ const socketHandler = (io) => {
     }
 
     // Delegate event handling to focused modules
-    registerMessageHandlers(socket, helpers);
+    registerMessageHandlers(socket, { ...helpers, io });
     registerConversationHandlers(socket, helpers);
     const { cleanup: cleanupTyping } = registerTypingHandlers(socket, helpers);
 
