@@ -25,7 +25,8 @@ passport.use(
                 return done(new Error("No email found in Google profile"), null);
             }
 
-            const avatar = photos?.[0]?.value || "";
+            let avatar = photos?.[0]?.value || "";
+            if (avatar) avatar = avatar.replace(/=s\d+[^"']*/g, "");
 
             try {
                 // Find user by Google ID or Email
@@ -34,15 +35,14 @@ passport.use(
                 });
 
                 if (user) {
-                    // Update user if they exist but don't have provider info
+                    // Always refresh avatar from the latest OAuth profile
+                    if (avatar) user.avatar = avatar;
                     if (!user.providerId) {
                         user.provider = "google";
                         user.providerId = id;
                         user.isVerified = true;
-                        if (!user.avatar) user.avatar = avatar;
-                        await user.save();
-                        console.log(`Updated legacy user ${user.email} with Google ID`);
                     }
+                    await user.save();
                     return done(null, user);
                 }
 
@@ -118,7 +118,9 @@ passport.use(
                 console.warn(`Could not fetch real email for ${username}, using fallback: ${email}`);
             }
 
-            const avatar = photos?.[0]?.value || "";
+            // GitHub avatar URLs can include size query params — strip for canonical URL.
+            let avatar = photos?.[0]?.value || "";
+            if (avatar) avatar = avatar.replace(/[?&]v=\d+/g, "").replace(/&s=\d+/g, "");
 
             try {
                 // Find user by GitHub ID or Email
@@ -127,15 +129,15 @@ passport.use(
                 });
 
                 if (user) {
-                    // Update user if they exist but don't have provider info
+                    // Always refresh avatar from the latest OAuth profile so
+                    // stale/empty URLs self-heal on the next login.
+                    if (avatar) user.avatar = avatar;
                     if (!user.providerId) {
                         user.provider = "github";
                         user.providerId = id;
                         user.isVerified = true;
-                        if (!user.avatar) user.avatar = avatar;
-                        await user.save();
-                        console.log(`Updated legacy user ${user.email} with GitHub ID`);
                     }
+                    await user.save();
                     return done(null, user);
                 }
 
