@@ -19,8 +19,13 @@ const messageSchema = new mongoose.Schema(
     },
     text: {
       type: String,
-      required: true,
       trim: true,
+      default: null,
+    },
+    gifUrl: {
+      type: String,
+      trim: true,
+      default: null,
     },
 
     // ✅ NEW: Thread Reply Field
@@ -43,30 +48,6 @@ const messageSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
-
-    // ADD BELOW status fields
-
-    isEdited: {
-      type: Boolean,
-      default: false,
-    },
-
-    editedAt: {
-      type: Date,
-      default: null,
-    },
-
-    isDeleted: {
-      type: Boolean,
-      default: false,
-    },
-
-    deletedFor: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "User",
-      },
-    ],
   },
   { timestamps: true },
 );

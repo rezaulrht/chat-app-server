@@ -1,10 +1,5 @@
 /**
  * Socket.io entry point
- *
- * Responsibilities:
- *   1. Authenticate every incoming socket (JWT middleware)
- *   2. Track the socket in Redis on connect / remove it on disconnect
- *   3. Delegate event handling to focused modules
  */
 
 const jwt = require("jsonwebtoken");
