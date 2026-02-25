@@ -51,9 +51,9 @@ const socketHandler = (io) => {
     }
 
     // Delegate event handling to focused modules
-    registerMessageHandlers(socket, helpers);
+    registerMessageHandlers(socket, { ...helpers, io });
     registerConversationHandlers(socket, helpers);
-    registerTypingHandlers(socket, helpers);
+    const { cleanup: cleanupTyping } = registerTypingHandlers(socket, helpers);
 
     // ----------------------------------------------------------------
     // Handle disconnection — clean up Redis mapping
@@ -64,6 +64,7 @@ const socketHandler = (io) => {
       );
 
       cleanupPresence();
+      await cleanupTyping();
 
       if (getIsRedisConnected()) {
         try {

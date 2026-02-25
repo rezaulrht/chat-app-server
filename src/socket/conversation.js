@@ -81,6 +81,19 @@ const registerConversationHandlers = (socket, { emitToUser }) => {
       }
     },
   );
+
+  // ----------------------------------------------------------------
+  // conversation:join / conversation:leave
+  // Client emits when opening / closing a conversation window.
+  // Joins the socket into a named room for real-time broadcasting.
+  // ----------------------------------------------------------------
+  socket.on("conversation:join", (conversationId) => {
+    if (conversationId) socket.join(`conv:${conversationId}`);
+  });
+
+  socket.on("conversation:leave", (conversationId) => {
+    if (conversationId) socket.leave(`conv:${conversationId}`);
+  });
 };
 
 module.exports = registerConversationHandlers;

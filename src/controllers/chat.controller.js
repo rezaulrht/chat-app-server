@@ -347,3 +347,106 @@ exports.markConversationSeen = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+//   Search conversations by message text
+exports.searchConversations = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { q } = req.query;
+
+    if (!q || q.trim().length < 2) {
+      return res.json([]);
+    }
+
+    const keyword = q.trim();
+
+    // Step 1: Get all conversation IDs for this user
+    const userConvs = await Conversation.find({
+      participants: userId,
+    })
+      .select("_id")
+      .lean();
+
+    const convIds = userConvs.map((c) => c._id);
+
+    // Step 2: Find conversations where any message matches the keyword
+    const matchingConvIds = await Message.distinct("conversationId", {
+      conversationId: { $in: convIds },
+      text: { $regex: keyword, $options: "i" },
+    });
+
+    // Step 3: Get the most recent matched message per conversation (to show in sidebar)
+    const matchedMessages = await Message.aggregate([
+      {
+        $match: {
+          conversationId: { $in: matchingConvIds },
+          text: { $regex: keyword, $options: "i" },
+        },
+      },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$conversationId",
+          text: { $first: "$text" },
+        },
+      },
+    ]);
+
+    const matchedMsgMap = {};
+    matchedMessages.forEach((m) => {
+      matchedMsgMap[m._id.toString()] = m.text;
+    });
+
+    // Step 4: Also find conversations matching by participant name
+    const allUserConvs = await Conversation.find({
+      _id: { $in: convIds },
+      participants: userId,
+    })
+      .populate("participants", "name avatar email")
+      .lean();
+
+    const nameMatchIds = allUserConvs
+      .filter((conv) => {
+        const other = conv.participants.find(
+          (p) => p._id.toString() !== userId,
+        );
+        return other?.name?.toLowerCase().includes(keyword.toLowerCase());
+      })
+      .map((c) => c._id.toString());
+
+    // Step 5: Merge message matches + name matches
+    const allMatchIds = [
+      ...new Set([
+        ...matchingConvIds.map((id) => id.toString()),
+        ...nameMatchIds,
+      ]),
+    ];
+
+    // Step 6: Fetch full conversations and format same as getConversations
+    const conversations = await Conversation.find({
+      _id: { $in: allMatchIds },
+      participants: userId,
+    })
+      .populate("participants", "name avatar email")
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    // Step 7: Format response — show matched message text instead of lastMessage
+    const result = conversations.map((conv) => {
+      const other = conv.participants.find((p) => p._id.toString() !== userId);
+      const matchedText = matchedMsgMap[conv._id.toString()];
+      return {
+        _id: conv._id,
+        participant: other,
+        lastMessage: matchedText
+          ? { ...conv.lastMessage, text: matchedText } // ✅ show the matched message
+          : conv.lastMessage,
+        updatedAt: conv.updatedAt,
+      };
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error("searchConversations error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};

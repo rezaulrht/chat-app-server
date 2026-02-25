@@ -11,6 +11,7 @@ const {
   getLastSeenBatch,
   markConversationSeen,
   sendMessage,
+  searchConversations,
 } = require("../controllers/chat.controller");
 
 // All routes require authentication
@@ -49,5 +50,6 @@ router.post("/last-seen", getLastSeenBatch);
 // @desc    Mark messages in a conversation as seen
 // @body    { lastSeenMessageId: ObjectId }
 router.post("/:conversationId/seen", markConversationSeen);
-
+// GET /api/chat/search-conversations?q=keyword
+router.get("/search-conversations", auth,searchConversations);
 module.exports = router;
