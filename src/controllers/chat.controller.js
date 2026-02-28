@@ -568,3 +568,41 @@ exports.toggleArchiveConversation = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+// @desc    Toggle mute conversation
+// @route   PATCH /api/chat/conversations/:conversationId/mute
+exports.toggleMuteConversation = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { conversationId } = req.params;
+
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      participants: userId,
+    });
+
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    const isMuted = conversation.mutedBy.includes(userId);
+
+    if (isMuted) {
+      conversation.mutedBy = conversation.mutedBy.filter(
+        (id) => id.toString() !== userId
+      );
+    } else {
+      conversation.mutedBy.push(userId);
+    }
+
+    await conversation.save();
+
+    res.json({
+      message: isMuted ? "Conversation unmuted" : "Conversation muted",
+      isMuted: !isMuted,
+    });
+  } catch (err) {
+    console.error("toggleMuteConversation error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
