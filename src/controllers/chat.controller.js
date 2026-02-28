@@ -100,11 +100,24 @@ exports.getConversations = async (req, res) => {
 
     const result = conversations.map((conv) => {
       const other = conv.participants.find((p) => p._id.toString() !== userId);
+
+      // Get unread count for this user
+      const unreadCount = conv.unreadCount?.get(userId) || 0;
+
+      // Check if conversation is pinned, archived, or muted by this user
+      const isPinned = conv.pinnedBy.some(id => id.toString() === userId);
+      const isArchived = conv.archivedBy.some(id => id.toString() === userId);
+      const isMuted = conv.mutedBy.some(id => id.toString() === userId);
+
       return {
         _id: conv._id,
         participant: other,
         lastMessage: conv.lastMessage,
         updatedAt: conv.updatedAt,
+        unreadCount,
+        isPinned,
+        isArchived,
+        isMuted,
       };
     });
 
@@ -215,6 +228,14 @@ exports.sendMessage = async (req, res) => {
       sender: userId,
       timestamp: populatedMessage.createdAt,
     };
+
+    // Increment unread count for receiver
+    if (!conversation.unreadCount) {
+      conversation.unreadCount = new Map();
+    }
+    const currentUnread = conversation.unreadCount.get(receiverId) || 0;
+    conversation.unreadCount.set(receiverId, currentUnread + 1);
+
     await conversation.save();
 
     res.status(201).json(populatedMessage);
@@ -255,11 +276,21 @@ exports.createConversation = async (req, res) => {
       const other = conversation.participants.find(
         (p) => p._id.toString() !== userId,
       );
+
+      const unreadCount = conversation.unreadCount?.get(userId) || 0;
+      const isPinned = conversation.pinnedBy.some(id => id.toString() === userId);
+      const isArchived = conversation.archivedBy.some(id => id.toString() === userId);
+      const isMuted = conversation.mutedBy.some(id => id.toString() === userId);
+
       return res.status(200).json({
         _id: conversation._id,
         participant: other,
         lastMessage: conversation.lastMessage,
         updatedAt: conversation.updatedAt,
+        unreadCount,
+        isPinned,
+        isArchived,
+        isMuted,
         existing: true,
       });
     }
@@ -279,6 +310,10 @@ exports.createConversation = async (req, res) => {
       participant: other,
       lastMessage: conversation.lastMessage,
       updatedAt: conversation.updatedAt,
+      unreadCount: 0,
+      isPinned: false,
+      isArchived: false,
+      isMuted: false,
       existing: false,
     });
   } catch (err) {
@@ -336,6 +371,13 @@ exports.markConversationSeen = async (req, res) => {
         },
       },
     );
+
+    // Reset unread count for this user
+    if (!conversation.unreadCount) {
+      conversation.unreadCount = new Map();
+    }
+    conversation.unreadCount.set(userId, 0);
+    await conversation.save();
 
     res.json({
       message: "Messages marked as seen",
@@ -447,6 +489,44 @@ exports.searchConversations = async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("searchConversations error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// @desc    Toggle pin conversation
+// @route   PATCH /api/chat/conversations/:conversationId/pin
+exports.togglePinConversation = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { conversationId } = req.params;
+
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      participants: userId,
+    });
+
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    const isPinned = conversation.pinnedBy.includes(userId);
+
+    if (isPinned) {
+      conversation.pinnedBy = conversation.pinnedBy.filter(
+        (id) => id.toString() !== userId
+      );
+    } else {
+      conversation.pinnedBy.push(userId);
+    }
+
+    await conversation.save();
+
+    res.json({
+      message: isPinned ? "Conversation unpinned" : "Conversation pinned",
+      isPinned: !isPinned,
+    });
+  } catch (err) {
+    console.error("togglePinConversation error:", err.message);
     res.status(500).json({ message: "Server error" });
   }
 };
