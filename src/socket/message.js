@@ -159,7 +159,7 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
 
       await message.save();
 
-      // Populate full message for frontend 
+      // Populate full message for frontend
       await message.populate("sender", "name avatar");
       if (message.replyTo) {
         await message.populate({
@@ -169,15 +169,15 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
         });
       }
 
-      // updated message 
-      const payload = message.toObject(); // full message object
+      // updated message
+      const payload = message.toObject(); 
 
       // Broadcast to entire conversation room
       io.to(`conv:${message.conversationId}`).emit("message:edited", payload);
     } catch (err) {
       console.error("message:edit error:", err.message);
       socket.emit("message:error", { message: "Failed to edit message" });
-    }s
+    }
   });
 
   // ----------------------------------------------------------------
