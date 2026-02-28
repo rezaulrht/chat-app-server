@@ -530,3 +530,41 @@ exports.togglePinConversation = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+// @desc    Toggle archive conversation
+// @route   PATCH /api/chat/conversations/:conversationId/archive
+exports.toggleArchiveConversation = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { conversationId } = req.params;
+
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      participants: userId,
+    });
+
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    const isArchived = conversation.archivedBy.includes(userId);
+
+    if (isArchived) {
+      conversation.archivedBy = conversation.archivedBy.filter(
+        (id) => id.toString() !== userId
+      );
+    } else {
+      conversation.archivedBy.push(userId);
+    }
+
+    await conversation.save();
+
+    res.json({
+      message: isArchived ? "Conversation unarchived" : "Conversation archived",
+      isArchived: !isArchived,
+    });
+  } catch (err) {
+    console.error("toggleArchiveConversation error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
