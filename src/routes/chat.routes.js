@@ -12,6 +12,9 @@ const {
   markConversationSeen,
   sendMessage,
   searchConversations,
+  togglePinConversation,
+  toggleArchiveConversation,
+  toggleMuteConversation,
 } = require("../controllers/chat.controller");
 
 // All routes require authentication
@@ -50,6 +53,20 @@ router.post("/last-seen", getLastSeenBatch);
 // @desc    Mark messages in a conversation as seen
 // @body    { lastSeenMessageId: ObjectId }
 router.post("/:conversationId/seen", markConversationSeen);
+
 // GET /api/chat/search-conversations?q=keyword
-router.get("/search-conversations", auth,searchConversations);
+router.get("/search-conversations", searchConversations);
+
+// @route   PATCH /api/chat/conversations/:conversationId/pin
+// @desc    Toggle pin status for a conversation
+router.patch("/conversations/:conversationId/pin", togglePinConversation);
+
+// @route   PATCH /api/chat/conversations/:conversationId/archive
+// @desc    Toggle archive status for a conversation
+router.patch("/conversations/:conversationId/archive", toggleArchiveConversation);
+
+// @route   PATCH /api/chat/conversations/:conversationId/mute
+// @desc    Toggle mute status for a conversation
+router.patch("/conversations/:conversationId/mute", toggleMuteConversation);
+
 module.exports = router;

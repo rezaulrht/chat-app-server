@@ -59,6 +59,11 @@ const registerConversationHandlers = (socket, { emitToUser }) => {
           { $set: { deliveredAt: seenAt } },
         );
 
+        // Reset unread count for this user atomically
+        await Conversation.findByIdAndUpdate(conversationId, {
+          $set: { [`unreadCount.${socket.userId}`]: 0 },
+        });
+
         const statusPayload = {
           conversationId,
           status: "read",
@@ -73,8 +78,16 @@ const registerConversationHandlers = (socket, { emitToUser }) => {
 
         // Notify both sides — receiver clears unread badge, sender sees blue ticks
         await emitToUser(socket.userId, "message:status", statusPayload);
+
+        // Emit unread count update (should be 0 now)
+        await emitToUser(socket.userId, "unread:update", {
+          conversationId,
+          unreadCount: 0,
+        });
+
         if (senderId) {
           await emitToUser(senderId, "message:status", statusPayload);
+          // Don't send unread:update to sender — their count is unaffected by this seen event
         }
       } catch (err) {
         console.error("conversation:seen error:", err.message);
