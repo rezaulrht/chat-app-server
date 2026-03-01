@@ -1,7 +1,16 @@
 const mongoose = require("mongoose");
 
+const MAX_GROUP_SIZE = 50;
+
 const conversationSchema = new mongoose.Schema(
   {
+    // "dm" for direct messages, "group" for group chats
+    type: {
+      type: String,
+      enum: ["dm", "group"],
+      default: "dm",
+    },
+
     participants: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -9,6 +18,38 @@ const conversationSchema = new mongoose.Schema(
         required: true,
       },
     ],
+
+    // ── Group-only fields ──────────────────────────────────────────
+    // Display name of the group (required for groups)
+    name: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+      default: null,
+    },
+
+    // Optional group avatar URL
+    avatar: {
+      type: String,
+      default: null,
+    },
+
+    // User who created the group (immutable owner)
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    // Users with admin privileges (subset of participants)
+    admins: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
+    // ──────────────────────────────────────────────────────────────
+
     lastMessage: {
       text: {
         type: String,
@@ -24,12 +65,14 @@ const conversationSchema = new mongoose.Schema(
         default: null,
       },
     },
+
     // Unread message count per participant
     unreadCount: {
       type: Map,
       of: Number,
       default: {},
     },
+
     // Pinned status per participant
     pinnedBy: [
       {
@@ -37,6 +80,7 @@ const conversationSchema = new mongoose.Schema(
         ref: "User",
       },
     ],
+
     // Archived status per participant
     archivedBy: [
       {
@@ -44,6 +88,7 @@ const conversationSchema = new mongoose.Schema(
         ref: "User",
       },
     ],
+
     // Muted status per participant
     mutedBy: [
       {
@@ -55,11 +100,40 @@ const conversationSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+// ── Validation hook ──────────────────────────────────────────────
+conversationSchema.pre("validate", function (next) {
+  if (this.type === "group") {
+    if (!this.name || !this.name.trim()) {
+      return next(new Error("Group conversations must have a name"));
+    }
+    if (!this.createdBy) {
+      return next(new Error("Group conversations must have a createdBy field"));
+    }
+    if (!this.participants || this.participants.length < 3) {
+      return next(
+        new Error("Group conversations must have at least 3 participants"),
+      );
+    }
+    if (this.participants.length > MAX_GROUP_SIZE) {
+      return next(
+        new Error(
+          `Group conversations cannot exceed ${MAX_GROUP_SIZE} participants`,
+        ),
+      );
+    }
+  }
+  next();
+});
+
+// ── Indexes ──────────────────────────────────────────────────────
+
 // Fast lookup: find all conversations a user is part of
 conversationSchema.index({ participants: 1 });
 
-// Prevent duplicate conversations between the same two users
+// Compound: used by participant-based pagination and DM duplicate checks
 conversationSchema.index({ participants: 1, _id: 1 });
+
+// ── Instance Methods ─────────────────────────────────────────────
 
 conversationSchema.methods.getUnreadMap = function () {
   if (!this.unreadCount) {
@@ -70,3 +144,4 @@ conversationSchema.methods.getUnreadMap = function () {
 };
 
 module.exports = mongoose.model("Conversation", conversationSchema);
+module.exports.MAX_GROUP_SIZE = MAX_GROUP_SIZE;
