@@ -94,6 +94,7 @@ exports.getConversations = async (req, res) => {
 
     const conversations = await Conversation.find({
       participants: userId,
+      archivedBy: { $nin: [userId] },
     })
       .populate("participants", "name avatar email")
       .sort({ updatedAt: -1 });
@@ -223,20 +224,15 @@ exports.sendMessage = async (req, res) => {
         },
       });
 
-    conversation.lastMessage = {
-      text,
-      sender: userId,
-      timestamp: populatedMessage.createdAt,
-    };
-
-    // Increment unread count for receiver
-    if (!conversation.unreadCount) {
-      conversation.unreadCount = new Map();
-    }
-    const currentUnread = conversation.unreadCount.get(receiverId) || 0;
-    conversation.unreadCount.set(receiverId, currentUnread + 1);
-
-    await conversation.save();
+    // Update conversation atomically
+    await Conversation.findByIdAndUpdate(conversationId, {
+      lastMessage: {
+        text,
+        sender: userId,
+        timestamp: populatedMessage.createdAt,
+      },
+      $inc: { [`unreadCount.${receiverId}`]: 1 },
+    });
 
     res.status(201).json(populatedMessage);
   } catch (err) {
@@ -372,12 +368,10 @@ exports.markConversationSeen = async (req, res) => {
       },
     );
 
-    // Reset unread count for this user
-    if (!conversation.unreadCount) {
-      conversation.unreadCount = new Map();
-    }
-    conversation.unreadCount.set(userId, 0);
-    await conversation.save();
+    // Reset unread count for this user atomically
+    await Conversation.findByIdAndUpdate(conversationId, {
+      $set: { [`unreadCount.${userId}`]: 0 },
+    });
 
     res.json({
       message: "Messages marked as seen",
@@ -509,7 +503,9 @@ exports.togglePinConversation = async (req, res) => {
       return res.status(404).json({ message: "Conversation not found" });
     }
 
-    const isPinned = conversation.pinnedBy.includes(userId);
+    const isPinned = conversation.pinnedBy.some(
+      (id) => id.toString() === userId,
+    );
 
     if (isPinned) {
       conversation.pinnedBy = conversation.pinnedBy.filter(
@@ -547,7 +543,9 @@ exports.toggleArchiveConversation = async (req, res) => {
       return res.status(404).json({ message: "Conversation not found" });
     }
 
-    const isArchived = conversation.archivedBy.includes(userId);
+    const isArchived = conversation.archivedBy.some(
+      (id) => id.toString() === userId,
+    );
 
     if (isArchived) {
       conversation.archivedBy = conversation.archivedBy.filter(
@@ -585,7 +583,9 @@ exports.toggleMuteConversation = async (req, res) => {
       return res.status(404).json({ message: "Conversation not found" });
     }
 
-    const isMuted = conversation.mutedBy.includes(userId);
+    const isMuted = conversation.mutedBy.some(
+      (id) => id.toString() === userId,
+    );
 
     if (isMuted) {
       conversation.mutedBy = conversation.mutedBy.filter(

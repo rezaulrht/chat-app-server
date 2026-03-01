@@ -61,4 +61,12 @@ conversationSchema.index({ participants: 1 });
 // Prevent duplicate conversations between the same two users
 conversationSchema.index({ participants: 1, _id: 1 });
 
+conversationSchema.methods.getUnreadMap = function () {
+  if (!this.unreadCount) {
+    this.unreadCount = new Map();
+  }
+
+  return this.unreadCount;
+};
+
 module.exports = mongoose.model("Conversation", conversationSchema);

@@ -59,12 +59,10 @@ const registerConversationHandlers = (socket, { emitToUser }) => {
           { $set: { deliveredAt: seenAt } },
         );
 
-        // Reset unread count for this user
-        if (!conversation.unreadCount) {
-          conversation.unreadCount = new Map();
-        }
-        conversation.unreadCount.set(socket.userId, 0);
-        await conversation.save();
+        // Reset unread count for this user atomically
+        await Conversation.findByIdAndUpdate(conversationId, {
+          $set: { [`unreadCount.${socket.userId}`]: 0 },
+        });
 
         const statusPayload = {
           conversationId,
@@ -89,11 +87,7 @@ const registerConversationHandlers = (socket, { emitToUser }) => {
 
         if (senderId) {
           await emitToUser(senderId, "message:status", statusPayload);
-          // Also emit unread count update to sender
-          await emitToUser(senderId, "unread:update", {
-            conversationId,
-            unreadCount: 0,
-          });
+          // Don't send unread:update to sender — their count is unaffected by this seen event
         }
       } catch (err) {
         console.error("conversation:seen error:", err.message);
