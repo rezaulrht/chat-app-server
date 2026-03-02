@@ -4,6 +4,7 @@
 
 const jwt = require("jsonwebtoken");
 const { redisClient, getIsRedisConnected } = require("../config/redis");
+const Conversation = require("../models/Conversation");
 
 const createHelpers = require("./helpers");
 const registerPresenceHandlers = require("./presence");
@@ -50,10 +51,33 @@ const socketHandler = (io) => {
       }
     }
 
+    // Auto-join all group conversation rooms for this user so they receive
+    // group broadcasts without needing to manually open each conversation.
+    try {
+      const groupConvs = await Conversation.find({
+        participants: socket.userId,
+        type: "group",
+      }).select("_id");
+
+      for (const conv of groupConvs) {
+        socket.join(`conv:${conv._id}`);
+      }
+      if (groupConvs.length > 0) {
+        console.log(
+          `🏠 User ${socket.userId} auto-joined ${groupConvs.length} group room(s)`,
+        );
+      }
+    } catch (err) {
+      console.error("Group room auto-join error:", err.message);
+    }
+
     // Delegate event handling to focused modules
     registerMessageHandlers(socket, { ...helpers, io });
-    registerConversationHandlers(socket, helpers);
-    const { cleanup: cleanupTyping } = registerTypingHandlers(socket, helpers);
+    registerConversationHandlers(socket, { ...helpers, io });
+    const { cleanup: cleanupTyping } = registerTypingHandlers(socket, {
+      ...helpers,
+      io,
+    });
 
     // ----------------------------------------------------------------
     // Handle disconnection — clean up Redis mapping

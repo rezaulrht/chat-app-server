@@ -7,7 +7,7 @@
 const Message = require("../models/Message");
 const Conversation = require("../models/Conversation");
 
-const registerConversationHandlers = (socket, { emitToUser }) => {
+const registerConversationHandlers = (socket, { emitToUser, io }) => {
   socket.on(
     "conversation:seen",
     async ({ conversationId, lastSeenMessageId }) => {
@@ -27,7 +27,7 @@ const registerConversationHandlers = (socket, { emitToUser }) => {
           participants: socket.userId,
         });
 
-        if (!conversation) return 
+        if (!conversation) return;
 
         // Reset unread count FIRST (before checking lastSeenMessageId)
         const result = await Conversation.findByIdAndUpdate(
@@ -68,6 +68,43 @@ const registerConversationHandlers = (socket, { emitToUser }) => {
 
         const seenAt = new Date();
 
+        const statusPayload = {
+          conversationId,
+          status: "read",
+          upToMessageId: lastSeenMessageId,
+          seenAt,
+        };
+
+        // ================================================================
+        // GROUP PATH — track per-user readBy, broadcast to room
+        // ================================================================
+        if (conversation.type === "group") {
+          // Add this user to readBy on all unread messages up to the pivot
+          await Message.updateMany(
+            {
+              conversationId,
+              "readBy.user": { $ne: socket.userId },
+              createdAt: { $lte: pivotMessage.createdAt },
+            },
+            { $addToSet: { readBy: { user: socket.userId, readAt: seenAt } } },
+          );
+
+          // Broadcast to all room members so every client can update read indicators
+          if (io) {
+            io.to(`conv:${conversationId}`).emit("message:status", {
+              ...statusPayload,
+              readBy: { userId: socket.userId, readAt: seenAt },
+            });
+          }
+
+          console.log("✅ Group message:status broadcast to room");
+          return;
+        }
+
+        // ================================================================
+        // DM PATH — bulk update receiverId, notify both participants
+        // ================================================================
+
         // Bulk update: all messages sent TO this user, not yet "read", up to pivot
         const messageUpdateResult = await Message.updateMany(
           {
@@ -94,13 +131,6 @@ const registerConversationHandlers = (socket, { emitToUser }) => {
           },
           { $set: { deliveredAt: seenAt } },
         );
-
-        const statusPayload = {
-          conversationId,
-          status: "read",
-          upToMessageId: lastSeenMessageId,
-          seenAt,
-        };
 
         // Find the other participant (original sender of those messages)
         const senderId = conversation.participants
