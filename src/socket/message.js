@@ -123,7 +123,8 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
 
     try {
       const message = await Message.findById(messageId);
-      if (!message || message.conversationId.toString() !== conversationId) return;
+      if (!message || message.conversationId.toString() !== conversationId)
+        return;
 
       const existingUsers = message.reactions?.get(emoji) || [];
       const userIdStr = socket.userId.toString();
@@ -155,6 +156,102 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
       io.to(`conv:${conversationId}`).emit("message:reacted", payload);
     } catch (err) {
       console.error("message:react error:", err.message);
+    }
+  });
+
+  // ----------------------------------------------------------------
+  // message:edit
+  // Client emits: { messageId, newText }
+  // ----------------------------------------------------------------
+  socket.on("message:edit", async ({ messageId, newText }) => {
+    if (!messageId || !newText?.trim()) return;
+
+    try {
+      const message = await Message.findById(messageId);
+      if (!message) return;
+
+      // Only sender can edit
+      if (message.sender.toString() !== socket.userId) return;
+
+      message.text = newText.trim();
+      message.isEdited = true;
+      message.editedAt = new Date();
+
+      await message.save();
+
+      // Populate full message for frontend
+      await message.populate("sender", "name avatar");
+      if (message.replyTo) {
+        await message.populate({
+          path: "replyTo",
+          select: "text sender",
+          populate: { path: "sender", select: "name avatar" },
+        });
+      }
+
+      // updated message
+      const payload = message.toObject(); 
+
+      // Broadcast to entire conversation room
+      io.to(`conv:${message.conversationId}`).emit("message:edited", payload);
+    } catch (err) {
+      console.error("message:edit error:", err.message);
+      socket.emit("message:error", { message: "Failed to edit message" });
+    }
+  });
+
+  // ----------------------------------------------------------------
+  // message:delete (Delete for Everyone) - FIXED
+  // ----------------------------------------------------------------
+  socket.on("message:delete", async ({ messageId, conversationId }) => {
+    if (!messageId || !conversationId) return;
+
+    try {
+      const message = await Message.findById(messageId);
+      if (!message || message.conversationId.toString() !== conversationId)
+        return;
+
+      // Only sender can delete for everyone
+      if (message.sender.toString() !== socket.userId) return;
+
+      message.isDeleted = true;
+      message.text = "This message was deleted"; // optional fallback text
+      await message.save();
+
+      const payload = {
+        messageId: message._id,
+        conversationId: message.conversationId,
+      };
+
+      // Broadcast to entire conversation
+      io.to(`conv:${conversationId}`).emit("message:deleted", payload);
+    } catch (err) {
+      console.error("message:delete error:", err.message);
+      socket.emit("message:error", { message: "Failed to delete message" });
+    }
+  });
+
+  // ----------------------------------------------------------------
+  // message:deleteForMe - FIXED
+  // ----------------------------------------------------------------
+  socket.on("message:deleteForMe", async ({ messageId, conversationId }) => {
+    if (!messageId || !conversationId) return;
+
+    try {
+      const message = await Message.findById(messageId);
+      if (!message || message.conversationId.toString() !== conversationId)
+        return;
+
+      // Add user to deletedFor array if not already
+      if (!message.deletedFor.includes(socket.userId)) {
+        message.deletedFor.push(socket.userId);
+        await message.save();
+      }
+
+      // Only send to this user
+      socket.emit("message:deletedForMe", { messageId });
+    } catch (err) {
+      console.error("message:deleteForMe error:", err.message);
     }
   });
 };

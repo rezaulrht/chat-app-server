@@ -19,13 +19,8 @@ const messageSchema = new mongoose.Schema(
     },
     text: {
       type: String,
+      required: true,
       trim: true,
-      default: null,
-    },
-    gifUrl: {
-      type: String,
-      trim: true,
-      default: null,
     },
 
     // ✅ NEW: Thread Reply Field
@@ -48,17 +43,42 @@ const messageSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
-    reactions: {
-      type: Map,
-      of: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
-      default: {},
+
+    // ADD BELOW status fields
+
+    isEdited: {
+      type: Boolean,
+      default: false,
     },
+
+    editedAt: {
+      type: Date,
+      default: null,
+    },
+
+    isDeleted: {
+      type: Boolean,
+      default: false,
+    },
+
+    deletedFor: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
   },
   { timestamps: true },
 );
 
 // Fast paginated history queries: fetch messages for a conversation sorted by time
 messageSchema.index({ conversationId: 1, createdAt: -1 });
+
+// sender fast load
+messageSchema.index({ sender: 1, createdAt: -1 });
+
+// Delete for Me query fast
+messageSchema.index({ deletedFor: 1 });
 
 // Index for bulk updates: find all messages for a conversation up to a specific message
 messageSchema.index({ conversationId: 1, _id: 1 });
