@@ -97,6 +97,8 @@ exports.getConversations = async (req, res) => {
       archivedBy: { $nin: [userId] },
     })
       .populate("participants", "name avatar email")
+      .populate("admins", "name avatar")
+      .populate("createdBy", "name avatar")
       .sort({ updatedAt: -1 });
 
     const result = conversations.map((conv) => {
@@ -250,30 +252,23 @@ exports.sendMessage = async (req, res) => {
         },
       });
 
-    if (isGroup) {
-      // Build $inc for every participant except the sender
-      const inc = {};
-      conversation.participants.forEach((p) => {
-        if (p.toString() !== userId) inc[`unreadCount.${p}`] = 1;
-      });
-      await Conversation.findByIdAndUpdate(conversationId, {
-        lastMessage: {
-          text,
-          sender: userId,
-          timestamp: populatedMessage.createdAt,
-        },
-        $inc: inc,
-      });
-    } else {
-      await Conversation.findByIdAndUpdate(conversationId, {
-        lastMessage: {
-          text,
-          sender: userId,
-          timestamp: populatedMessage.createdAt,
-        },
-        $inc: { [`unreadCount.${receiverId}`]: 1 },
-      });
-    }
+    const lastMessage = {
+      text,
+      sender: userId,
+      timestamp: populatedMessage.createdAt,
+    };
+    const inc = isGroup
+      ? Object.fromEntries(
+          conversation.participants
+            .filter((p) => p.toString() !== userId)
+            .map((p) => [`unreadCount.${p}`, 1]),
+        )
+      : { [`unreadCount.${receiverId}`]: 1 };
+
+    await Conversation.findByIdAndUpdate(conversationId, {
+      lastMessage,
+      $inc: inc,
+    });
 
     res.status(201).json(populatedMessage);
   } catch (err) {

@@ -25,7 +25,13 @@ const { MAX_GROUP_SIZE } = require("../models/Conversation");
 // into a Socket.io room. Safe to call even when Redis is unavailable.
 // ---------------------------------------------------------------------------
 const joinSocketsToRoom = async (io, userIds, roomId) => {
-  if (!getIsRedisConnected()) return;
+  if (!getIsRedisConnected()) {
+    console.warn(
+      `[joinSocketsToRoom] Redis unavailable — live socket join skipped for room ${roomId}. ` +
+        "Affected users will auto-join on next connect via handler.js.",
+    );
+    return;
+  }
   for (const userId of userIds) {
     try {
       const socketIds = await redisClient.sMembers(`sockets:${userId}`);
@@ -33,8 +39,11 @@ const joinSocketsToRoom = async (io, userIds, roomId) => {
         const socket = io.sockets.sockets.get(sid);
         if (socket) socket.join(roomId);
       }
-    } catch (_) {
-      // Non-fatal — user will auto-join on next connect via handler.js
+    } catch (err) {
+      console.warn(
+        `[joinSocketsToRoom] Failed to join sockets for user ${userId}:`,
+        err.message,
+      );
     }
   }
 };
@@ -321,7 +330,13 @@ exports.deleteGroup = async (req, res) => {
 // from a Socket.io room.
 // ---------------------------------------------------------------------------
 const leaveSocketsFromRoom = async (io, userIds, roomId) => {
-  if (!getIsRedisConnected()) return;
+  if (!getIsRedisConnected()) {
+    console.warn(
+      `[leaveSocketsFromRoom] Redis unavailable — live socket leave skipped for room ${roomId}. ` +
+        "Affected users will no longer receive room broadcasts once they reconnect.",
+    );
+    return;
+  }
   for (const userId of userIds) {
     try {
       const socketIds = await redisClient.sMembers(`sockets:${userId}`);
@@ -329,8 +344,11 @@ const leaveSocketsFromRoom = async (io, userIds, roomId) => {
         const socket = io.sockets.sockets.get(sid);
         if (socket) socket.leave(roomId);
       }
-    } catch (_) {
-      // Non-fatal
+    } catch (err) {
+      console.warn(
+        `[leaveSocketsFromRoom] Failed to leave sockets for user ${userId}:`,
+        err.message,
+      );
     }
   }
 };
@@ -452,12 +470,14 @@ exports.removeMembers = async (req, res) => {
     const participantIds = conversation.participants.map((p) => p.toString());
     const validTargets = uniqueIds.filter((id) => participantIds.includes(id));
     if (validTargets.length === 0) {
-      return res
-        .status(400)
-        .json({
-          message: "None of the provided users are members of this group",
-        });
+      return res.status(400).json({
+        message: "None of the provided users are members of this group",
+      });
     }
+
+    // Build $unset for each removed user's unreadCount entry
+    const unsetFields = {};
+    for (const id of validTargets) unsetFields[`unreadCount.${id}`] = "";
 
     await Conversation.findByIdAndUpdate(conversation._id, {
       $pull: {
@@ -468,6 +488,7 @@ exports.removeMembers = async (req, res) => {
         archivedBy: { $in: validTargets },
         mutedBy: { $in: validTargets },
       },
+      $unset: unsetFields,
     });
 
     // Force-leave removed members' sockets from the room
@@ -641,6 +662,7 @@ exports.leaveGroup = async (req, res) => {
         archivedBy: userId,
         mutedBy: userId,
       },
+      $unset: { [`unreadCount.${userId}`]: "" },
     };
 
     // Transfer ownership if the creator is leaving

@@ -60,6 +60,7 @@ router.delete(
   "/conversations/:id",
   loadConversation,
   isGroupConversation,
+  isParticipant,
   isCreator,
   deleteGroup,
 );

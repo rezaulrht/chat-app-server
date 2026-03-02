@@ -130,15 +130,16 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
           const deliveredTo = [];
           const deliveredAt = new Date();
 
+          // Fetch once before the loop — avoids N+1 DB reads for large groups
+          const updatedConv =
+            await Conversation.findById(conversationId).select("unreadCount");
+
           for (const participantId of otherParticipants) {
             const online = await isUserOnline(participantId);
             if (online) {
               deliveredTo.push({ user: participantId, deliveredAt });
             }
 
-            // Re-read updated unreadCount from DB for accuracy
-            const updatedConv =
-              await Conversation.findById(conversationId).select("unreadCount");
             const unreadCount =
               updatedConv?.unreadCount?.get(participantId) || 0;
             await emitToUser(participantId, "unread:update", {
