@@ -38,12 +38,6 @@ app.use(
     credentials: true,
   }),
 );
-app.use(
-  cors({
-    origin: [process.env.SITE_URL, "http://localhost:3000"],
-    credentials: true,
-  }),
-);
 app.use(express.json());
 
 // Routes
@@ -59,11 +53,8 @@ const mongoose = require("mongoose");
 app.get("/health", (req, res) => {
   const dbStatus =
     mongoose.connection.readyState === 1 ? "Connected" : "Disconnected";
-  const dbStatus =
-    mongoose.connection.readyState === 1 ? "Connected" : "Disconnected";
   const redisStatus = getIsRedisConnected() ? "Connected" : "Disconnected";
 
-  const status = dbStatus === "Connected" ? 200 : 500;
   const status = dbStatus === "Connected" ? 200 : 500;
 
   res.status(status).json({
@@ -71,7 +62,6 @@ app.get("/health", (req, res) => {
     database: dbStatus,
     redis: redisStatus,
     uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
     timestamp: new Date().toISOString(),
   });
 });
