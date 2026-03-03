@@ -97,21 +97,40 @@ exports.getConversations = async (req, res) => {
       archivedBy: { $nin: [userId] },
     })
       .populate("participants", "name avatar email")
+      .populate("admins", "name avatar")
+      .populate("createdBy", "name avatar")
       .sort({ updatedAt: -1 });
 
     const result = conversations.map((conv) => {
-      const other = conv.participants.find((p) => p._id.toString() !== userId);
-
-      // Get unread count for this user
       const unreadCount = conv.unreadCount?.get(userId) || 0;
+      const isPinned = conv.pinnedBy.some((id) => id.toString() === userId);
+      const isArchived = conv.archivedBy.some((id) => id.toString() === userId);
+      const isMuted = conv.mutedBy.some((id) => id.toString() === userId);
 
-      // Check if conversation is pinned, archived, or muted by this user
-      const isPinned = conv.pinnedBy.some(id => id.toString() === userId);
-      const isArchived = conv.archivedBy.some(id => id.toString() === userId);
-      const isMuted = conv.mutedBy.some(id => id.toString() === userId);
+      // ── Group conversation ───────────────────────────────────────
+      if (conv.type === "group") {
+        return {
+          _id: conv._id,
+          type: "group",
+          name: conv.name,
+          avatar: conv.avatar,
+          createdBy: conv.createdBy,
+          admins: conv.admins,
+          participants: conv.participants,
+          lastMessage: conv.lastMessage,
+          updatedAt: conv.updatedAt,
+          unreadCount,
+          isPinned,
+          isArchived,
+          isMuted,
+        };
+      }
 
+      // ── DM conversation (existing shape + type field) ────────────
+      const other = conv.participants.find((p) => p._id.toString() !== userId);
       return {
         _id: conv._id,
+        type: "dm",
         participant: other,
         lastMessage: conv.lastMessage,
         updatedAt: conv.updatedAt,
@@ -175,9 +194,9 @@ exports.sendMessage = async (req, res) => {
     const userId = req.user.id;
     const { conversationId, receiverId, text, replyTo } = req.body;
 
-    if (!conversationId || !receiverId || !text) {
+    if (!conversationId || !text) {
       return res.status(400).json({
-        message: "conversationId, receiverId and text are required",
+        message: "conversationId and text are required",
       });
     }
 
@@ -190,6 +209,15 @@ exports.sendMessage = async (req, res) => {
       return res.status(403).json({
         message: "Access denied to this conversation",
       });
+    }
+
+    const isGroup = conversation.type === "group";
+
+    // DMs require a receiverId
+    if (!isGroup && !receiverId) {
+      return res
+        .status(400)
+        .json({ message: "receiverId is required for direct messages" });
     }
 
     // Reply validation
@@ -209,7 +237,7 @@ exports.sendMessage = async (req, res) => {
     const message = await Message.create({
       conversationId,
       sender: userId,
-      receiverId,
+      receiverId: isGroup ? null : receiverId,
       text,
       replyTo: replyTo || null,
     });
@@ -224,14 +252,22 @@ exports.sendMessage = async (req, res) => {
         },
       });
 
-    // Update conversation atomically
+    const lastMessage = {
+      text,
+      sender: userId,
+      timestamp: populatedMessage.createdAt,
+    };
+    const inc = isGroup
+      ? Object.fromEntries(
+          conversation.participants
+            .filter((p) => p.toString() !== userId)
+            .map((p) => [`unreadCount.${p}`, 1]),
+        )
+      : { [`unreadCount.${receiverId}`]: 1 };
+
     await Conversation.findByIdAndUpdate(conversationId, {
-      lastMessage: {
-        text,
-        sender: userId,
-        timestamp: populatedMessage.createdAt,
-      },
-      $inc: { [`unreadCount.${receiverId}`]: 1 },
+      lastMessage,
+      $inc: inc,
     });
 
     res.status(201).json(populatedMessage);
@@ -274,9 +310,15 @@ exports.createConversation = async (req, res) => {
       );
 
       const unreadCount = conversation.unreadCount?.get(userId) || 0;
-      const isPinned = conversation.pinnedBy.some(id => id.toString() === userId);
-      const isArchived = conversation.archivedBy.some(id => id.toString() === userId);
-      const isMuted = conversation.mutedBy.some(id => id.toString() === userId);
+      const isPinned = conversation.pinnedBy.some(
+        (id) => id.toString() === userId,
+      );
+      const isArchived = conversation.archivedBy.some(
+        (id) => id.toString() === userId,
+      );
+      const isMuted = conversation.mutedBy.some(
+        (id) => id.toString() === userId,
+      );
 
       return res.status(200).json({
         _id: conversation._id,
@@ -432,7 +474,7 @@ exports.searchConversations = async (req, res) => {
       matchedMsgMap[m._id.toString()] = m.text;
     });
 
-    // Step 4: Also find conversations matching by participant name
+    // Step 4: Fetch all conversations with participants populated for name/group-name matching
     const allUserConvs = await Conversation.find({
       _id: { $in: convIds },
       participants: userId,
@@ -442,6 +484,11 @@ exports.searchConversations = async (req, res) => {
 
     const nameMatchIds = allUserConvs
       .filter((conv) => {
+        if (conv.type === "group") {
+          // Match by group name
+          return conv.name?.toLowerCase().includes(keyword.toLowerCase());
+        }
+        // Match by DM participant name
         const other = conv.participants.find(
           (p) => p._id.toString() !== userId,
         );
@@ -449,7 +496,7 @@ exports.searchConversations = async (req, res) => {
       })
       .map((c) => c._id.toString());
 
-    // Step 5: Merge message matches + name matches
+    // Step 5: Merge message matches + name/group-name matches
     const allMatchIds = [
       ...new Set([
         ...matchingConvIds.map((id) => id.toString()),
@@ -466,17 +513,53 @@ exports.searchConversations = async (req, res) => {
       .sort({ updatedAt: -1 })
       .lean();
 
-    // Step 7: Format response — show matched message text instead of lastMessage
+    // Step 7: Format response — branch on type, include flags, show matched message text
     const result = conversations.map((conv) => {
-      const other = conv.participants.find((p) => p._id.toString() !== userId);
       const matchedText = matchedMsgMap[conv._id.toString()];
+      const lastMessage = matchedText
+        ? { ...conv.lastMessage, text: matchedText }
+        : conv.lastMessage;
+
+      const unreadCount = conv.unreadCount?.[userId] || 0;
+      const isPinned = (conv.pinnedBy || []).some(
+        (id) => id.toString() === userId,
+      );
+      const isArchived = (conv.archivedBy || []).some(
+        (id) => id.toString() === userId,
+      );
+      const isMuted = (conv.mutedBy || []).some(
+        (id) => id.toString() === userId,
+      );
+
+      if (conv.type === "group") {
+        return {
+          _id: conv._id,
+          type: "group",
+          name: conv.name,
+          avatar: conv.avatar,
+          createdBy: conv.createdBy,
+          admins: conv.admins,
+          participants: conv.participants,
+          lastMessage,
+          updatedAt: conv.updatedAt,
+          unreadCount,
+          isPinned,
+          isArchived,
+          isMuted,
+        };
+      }
+
+      const other = conv.participants.find((p) => p._id.toString() !== userId);
       return {
         _id: conv._id,
+        type: "dm",
         participant: other,
-        lastMessage: matchedText
-          ? { ...conv.lastMessage, text: matchedText } // ✅ show the matched message
-          : conv.lastMessage,
+        lastMessage,
         updatedAt: conv.updatedAt,
+        unreadCount,
+        isPinned,
+        isArchived,
+        isMuted,
       };
     });
 
@@ -509,7 +592,7 @@ exports.togglePinConversation = async (req, res) => {
 
     if (isPinned) {
       conversation.pinnedBy = conversation.pinnedBy.filter(
-        (id) => id.toString() !== userId
+        (id) => id.toString() !== userId,
       );
     } else {
       conversation.pinnedBy.push(userId);
@@ -549,7 +632,7 @@ exports.toggleArchiveConversation = async (req, res) => {
 
     if (isArchived) {
       conversation.archivedBy = conversation.archivedBy.filter(
-        (id) => id.toString() !== userId
+        (id) => id.toString() !== userId,
       );
     } else {
       conversation.archivedBy.push(userId);
@@ -583,13 +666,11 @@ exports.toggleMuteConversation = async (req, res) => {
       return res.status(404).json({ message: "Conversation not found" });
     }
 
-    const isMuted = conversation.mutedBy.some(
-      (id) => id.toString() === userId,
-    );
+    const isMuted = conversation.mutedBy.some((id) => id.toString() === userId);
 
     if (isMuted) {
       conversation.mutedBy = conversation.mutedBy.filter(
-        (id) => id.toString() !== userId
+        (id) => id.toString() !== userId,
       );
     } else {
       conversation.mutedBy.push(userId);
