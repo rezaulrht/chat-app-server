@@ -101,28 +101,23 @@ const conversationSchema = new mongoose.Schema(
 );
 
 // ── Validation hook ──────────────────────────────────────────────
-conversationSchema.pre("validate", function (next) {
+conversationSchema.pre("validate", async function () {
   if (this.type === "group") {
     if (!this.name || !this.name.trim()) {
-      return next(new Error("Group conversations must have a name"));
+      throw new Error("Group conversations must have a name");
     }
     if (!this.createdBy) {
-      return next(new Error("Group conversations must have a createdBy field"));
+      throw new Error("Group conversations must have a createdBy field");
     }
     if (!this.participants || this.participants.length < 3) {
-      return next(
-        new Error("Group conversations must have at least 3 participants"),
-      );
+      throw new Error("Group conversations must have at least 3 participants");
     }
     if (this.participants.length > MAX_GROUP_SIZE) {
-      return next(
-        new Error(
-          `Group conversations cannot exceed ${MAX_GROUP_SIZE} participants`,
-        ),
+      throw new Error(
+        `Group conversations cannot exceed ${MAX_GROUP_SIZE} participants`,
       );
     }
   }
-  next();
 });
 
 // ── Indexes ──────────────────────────────────────────────────────
