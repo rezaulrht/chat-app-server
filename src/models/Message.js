@@ -44,10 +44,16 @@ const messageSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // ✅ NEW: Thread Reply Field
+    //  NEW: Thread Reply Field
     replyTo: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Message",
+      default: null,
+    },
+    // Scheduled Messages
+    scheduledFromId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ScheduledMessage",
       default: null,
     },
 
@@ -115,5 +121,8 @@ messageSchema.index({ conversationId: 1, "readBy.user": 1 });
 
 // Reply index
 messageSchema.index({ replyTo: 1 });
+
+// Scheduled Messages
+messageSchema.index({ scheduledFromId: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model("Message", messageSchema);
