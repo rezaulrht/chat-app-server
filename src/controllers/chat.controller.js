@@ -94,7 +94,6 @@ exports.getConversations = async (req, res) => {
 
     const conversations = await Conversation.find({
       participants: userId,
-      archivedBy: { $nin: [userId] },
     })
       .populate("participants", "name avatar email")
       .populate("admins", "name avatar")
@@ -259,10 +258,10 @@ exports.sendMessage = async (req, res) => {
     };
     const inc = isGroup
       ? Object.fromEntries(
-          conversation.participants
-            .filter((p) => p.toString() !== userId)
-            .map((p) => [`unreadCount.${p}`, 1]),
-        )
+        conversation.participants
+          .filter((p) => p.toString() !== userId)
+          .map((p) => [`unreadCount.${p}`, 1]),
+      )
       : { [`unreadCount.${receiverId}`]: 1 };
 
     await Conversation.findByIdAndUpdate(conversationId, {
