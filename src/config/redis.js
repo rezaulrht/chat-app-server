@@ -8,7 +8,8 @@ const redisClient = createClient({
     reconnectStrategy: (retries) => {
       // Don't keep retrying indefinitely if it fails 3 times in a row
       if (retries > 3) {
-        if (retries === 4) console.warn("⚠️ Redis not available - continuing without it.");
+        if (retries === 4)
+          console.warn("⚠️ Redis not available - continuing without it.");
         return false; // stop retrying
       }
       return Math.min(retries * 500, 2000);
@@ -28,10 +29,15 @@ redisClient.on("ready", () => {
 });
 
 redisClient.on("error", (err) => {
+  isRedisConnected = false;
   // Only log if it's not a connection refused error after we've already warned
-  if (err.code !== 'ECONNREFUSED' || !isRedisConnected) {
+  if (err.code !== "ECONNREFUSED") {
     // We'll keep this quiet in dev if it's just missing
   }
+});
+
+redisClient.on("end", () => {
+  isRedisConnected = false;
 });
 
 const connectRedis = async () => {
@@ -39,12 +45,20 @@ const connectRedis = async () => {
     await redisClient.connect();
   } catch (err) {
     // Silence the initial connection error to avoid spam
-    if (err.code === 'ECONNREFUSED') {
-      console.log("ℹ️ Redis not found at", redisUrl, "- Features requiring Redis will be skipped.");
+    if (err.code === "ECONNREFUSED") {
+      console.log(
+        "ℹ️ Redis not found at",
+        redisUrl,
+        "- Features requiring Redis will be skipped.",
+      );
     } else {
       console.error("Redis Init Error:", err);
     }
   }
 };
 
-module.exports = { redisClient, connectRedis, getIsRedisConnected: () => isRedisConnected };
+module.exports = {
+  redisClient,
+  connectRedis,
+  getIsRedisConnected: () => isRedisConnected,
+};
