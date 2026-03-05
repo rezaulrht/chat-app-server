@@ -94,7 +94,6 @@ exports.getConversations = async (req, res) => {
 
     const conversations = await Conversation.find({
       participants: userId,
-      archivedBy: { $nin: [userId] },
     })
       .populate("participants", "name avatar email")
       .populate("admins", "name avatar")
@@ -259,10 +258,10 @@ exports.sendMessage = async (req, res) => {
     };
     const inc = isGroup
       ? Object.fromEntries(
-          conversation.participants
-            .filter((p) => p.toString() !== userId)
-            .map((p) => [`unreadCount.${p}`, 1]),
-        )
+        conversation.participants
+          .filter((p) => p.toString() !== userId)
+          .map((p) => [`unreadCount.${p}`, 1]),
+      )
       : { [`unreadCount.${receiverId}`]: 1 };
 
     await Conversation.findByIdAndUpdate(conversationId, {
@@ -577,28 +576,25 @@ exports.togglePinConversation = async (req, res) => {
     const userId = req.user.id;
     const { conversationId } = req.params;
 
-    const conversation = await Conversation.findOne({
+    // Check if already pinned by this user
+    const existing = await Conversation.findOne({
       _id: conversationId,
       participants: userId,
-    });
+    }).select("pinnedBy");
 
-    if (!conversation) {
+    if (!existing) {
       return res.status(404).json({ message: "Conversation not found" });
     }
 
-    const isPinned = conversation.pinnedBy.some(
-      (id) => id.toString() === userId,
+    const isPinned = existing.pinnedBy.some((id) => id.toString() === userId);
+
+    // Use atomic $pull / $addToSet to avoid triggering the pre-validate hook
+    await Conversation.updateOne(
+      { _id: conversationId },
+      isPinned
+        ? { $pull: { pinnedBy: userId } }
+        : { $addToSet: { pinnedBy: userId } },
     );
-
-    if (isPinned) {
-      conversation.pinnedBy = conversation.pinnedBy.filter(
-        (id) => id.toString() !== userId,
-      );
-    } else {
-      conversation.pinnedBy.push(userId);
-    }
-
-    await conversation.save();
 
     res.json({
       message: isPinned ? "Conversation unpinned" : "Conversation pinned",
@@ -617,28 +613,25 @@ exports.toggleArchiveConversation = async (req, res) => {
     const userId = req.user.id;
     const { conversationId } = req.params;
 
-    const conversation = await Conversation.findOne({
+    const existing = await Conversation.findOne({
       _id: conversationId,
       participants: userId,
-    });
+    }).select("archivedBy");
 
-    if (!conversation) {
+    if (!existing) {
       return res.status(404).json({ message: "Conversation not found" });
     }
 
-    const isArchived = conversation.archivedBy.some(
+    const isArchived = existing.archivedBy.some(
       (id) => id.toString() === userId,
     );
 
-    if (isArchived) {
-      conversation.archivedBy = conversation.archivedBy.filter(
-        (id) => id.toString() !== userId,
-      );
-    } else {
-      conversation.archivedBy.push(userId);
-    }
-
-    await conversation.save();
+    await Conversation.updateOne(
+      { _id: conversationId },
+      isArchived
+        ? { $pull: { archivedBy: userId } }
+        : { $addToSet: { archivedBy: userId } },
+    );
 
     res.json({
       message: isArchived ? "Conversation unarchived" : "Conversation archived",
@@ -657,26 +650,23 @@ exports.toggleMuteConversation = async (req, res) => {
     const userId = req.user.id;
     const { conversationId } = req.params;
 
-    const conversation = await Conversation.findOne({
+    const existing = await Conversation.findOne({
       _id: conversationId,
       participants: userId,
-    });
+    }).select("mutedBy");
 
-    if (!conversation) {
+    if (!existing) {
       return res.status(404).json({ message: "Conversation not found" });
     }
 
-    const isMuted = conversation.mutedBy.some((id) => id.toString() === userId);
+    const isMuted = existing.mutedBy.some((id) => id.toString() === userId);
 
-    if (isMuted) {
-      conversation.mutedBy = conversation.mutedBy.filter(
-        (id) => id.toString() !== userId,
-      );
-    } else {
-      conversation.mutedBy.push(userId);
-    }
-
-    await conversation.save();
+    await Conversation.updateOne(
+      { _id: conversationId },
+      isMuted
+        ? { $pull: { mutedBy: userId } }
+        : { $addToSet: { mutedBy: userId } },
+    );
 
     res.json({
       message: isMuted ? "Conversation unmuted" : "Conversation muted",

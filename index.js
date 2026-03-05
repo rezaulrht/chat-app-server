@@ -8,8 +8,11 @@ const socketHandler = require("./src/socket/handler");
 const authRoutes = require("./src/routes/auth.routes");
 const chatRoutes = require("./src/routes/chat.routes");
 const groupRoutes = require("./src/routes/group.routes");
+const resetRoutes = require("./src/routes/reset.routes");
 const passport = require("./src/config/passport");
-const { connectRedis } = require("./src/config/redis");
+const { connectRedis, getIsRedisConnected } = require("./src/config/redis");
+const scheduleRoutes = require("./src/routes/schedule.routes");
+const mongoose = require("mongoose");
 
 const port = process.env.PORT || 3000;
 const app = express();
@@ -44,12 +47,13 @@ app.use(express.json());
 app.use("/auth", authRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/chat", groupRoutes);
+app.use("/api/reset", resetRoutes);
 app.use("/api/reset", require("./src/routes/reset.routes"));
 
-// Health check for Deployment (UptimeRobot/Heartbeat)
-const { getIsRedisConnected } = require("./src/config/redis");
-const mongoose = require("mongoose");
+// Scheduled Message Routes
+app.use("/api/messages", scheduleRoutes);
 
+// Health check for Deployment (UptimeRobot/Heartbeat)
 app.get("/health", (req, res) => {
   const dbStatus =
     mongoose.connection.readyState === 1 ? "Connected" : "Disconnected";
@@ -73,13 +77,28 @@ app.get("/", (req, res) => {
 // Initialize Socket.io handlers
 socketHandler(io);
 
-// Connect to database
-connectDB();
+(async () => {
+  try {
+    // Connect to database
+    await connectDB();
+    console.log("MongoDB Connected");
 
-// Connect redis
-connectRedis();
+    // Connect redis
+    await connectRedis();
+    console.log("Redis Connected");
 
-server.listen(port, () => {
-  console.log(`ConvoX Server is running on port ${port}`);
-  console.log(`Socket.io is ready for connections`);
-});
+    // Start Scheduler
+    const startScheduler = require("./src/utility/scheduler");
+    startScheduler(io);
+    console.log("Scheduler Started");
+
+    // Start server
+    server.listen(port, () => {
+      console.log(`ConvoX Server is running on port ${port}`);
+      console.log(`Socket.io is ready for connections`);
+    });
+  } catch (error) {
+    console.error("Server Startup Error:", error);
+    process.exit(1);
+  }
+})();
