@@ -81,3 +81,40 @@ exports.createWorkspace = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+// ---------------------------------------------------------------------------
+// GET /api/workspaces
+// List all workspaces the authenticated user is a member of.
+// Returns a lightweight shape — full member list is NOT included (too heavy).
+// ---------------------------------------------------------------------------
+exports.listMyWorkspaces = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const workspaces = await Workspace.find({ "members.user": userId })
+      .populate("createdBy", "name avatar")
+      .sort({ createdAt: -1 });
+
+    const result = workspaces.map((ws) => {
+      const memberRecord = ws.members.find(
+        (m) => m.user.toString() === userId,
+      );
+      return {
+        _id: ws._id,
+        name: ws.name,
+        avatar: ws.avatar,
+        description: ws.description,
+        visibility: ws.visibility,
+        myRole: memberRecord?.role || "member",
+        memberCount: ws.members.length,
+        createdBy: ws.createdBy,
+        createdAt: ws.createdAt,
+      };
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error("listMyWorkspaces error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
