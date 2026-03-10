@@ -339,6 +339,90 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         }
     });
 
+    // ================================================================
+    // module:typing:start / module:typing:stop
+    // ================================================================
+
+    socket.on("module:typing:start", async ({ moduleId } = {}) => {
+        if (!moduleId) return;
+
+        // Throttle typing bursts per module on this socket
+        const now = Date.now();
+        const lastEmit = lastModuleTypingEmit.get(moduleId) ?? 0;
+        if (now - lastEmit < TYPING_THROTTLE_MS) return;
+        lastModuleTypingEmit.set(moduleId, now);
+
+        // Security: verify user can access this module
+        try {
+            const mod = await Module.findById(moduleId).select(
+                "workspaceId isPrivate allowedMembers"
+            );
+            if (!mod) return;
+
+            const workspace = await Workspace.findOne({
+                _id: mod.workspaceId,
+                "members.user": socket.userId,
+            }).select("members");
+            if (!workspace) return;
+
+            if (mod.isPrivate) {
+                const memberRecord = workspace.members.find(
+                    (m) => m.user.toString() === socket.userId
+                );
+                const isAdmin =
+                    memberRecord?.role === "owner" || memberRecord?.role === "admin";
+                const isAllowed = mod.allowedMembers
+                    .map(String)
+                    .includes(socket.userId);
+                if (!isAdmin && !isAllowed) return;
+            }
+        } catch {
+            return;
+        }
+
+        const key = `${moduleId}:${socket.userId}`;
+        const typingPayload = {
+            moduleId,
+            userId: socket.userId,
+            isTyping: true,
+        };
+
+        // Excludes sender by design
+        socket.to(`module:${moduleId}`).emit("module:typing:update", typingPayload);
+
+        // Reset auto-stop timer
+        if (moduleTypingTimers.has(key)) {
+            clearTimeout(moduleTypingTimers.get(key));
+        }
+
+        const timer = setTimeout(() => {
+            moduleTypingTimers.delete(key);
+            socket.to(`module:${moduleId}`).emit("module:typing:update", {
+                moduleId,
+                userId: socket.userId,
+                isTyping: false,
+            });
+        }, TYPING_AUTO_STOP_MS);
+
+        moduleTypingTimers.set(key, timer);
+    });
+
+    socket.on("module:typing:stop", ({ moduleId } = {}) => {
+        if (!moduleId) return;
+
+        const key = `${moduleId}:${socket.userId}`;
+        if (moduleTypingTimers.has(key)) {
+            clearTimeout(moduleTypingTimers.get(key));
+            moduleTypingTimers.delete(key);
+        }
+
+        socket.to(`module:${moduleId}`).emit("module:typing:update", {
+            moduleId,
+            userId: socket.userId,
+            isTyping: false,
+        });
+    });
+
 
     // Cleanup function for disconnect
     const cleanup = () => {
@@ -355,3 +439,19 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
 };
 
 module.exports = registerModuleHandlers;
+
+const emitModuleCreated = (io, workspaceId, data) => {
+    io.to(`workspace:${workspaceId}`).emit("module:created", data);
+};
+
+const emitModuleUpdated = (io, workspaceId, data) => {
+    io.to(`workspace:${workspaceId}`).emit("module:updated", data);
+};
+
+const emitModuleDeleted = (io, workspaceId, data) => {
+    io.to(`workspace:${workspaceId}`).emit("module:deleted", data);
+};
+
+module.exports.emitModuleCreated = emitModuleCreated;
+module.exports.emitModuleUpdated = emitModuleUpdated;
+module.exports.emitModuleDeleted = emitModuleDeleted;
