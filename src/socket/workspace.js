@@ -49,3 +49,30 @@ const registerWorkspaceHandlers = (socket, { emitToUser, io }) => {
 };
 
 module.exports = registerWorkspaceHandlers;
+
+// Optional wrappers for controller-side emits
+const emitWorkspaceUpdated = (io, workspaceId, data) => {
+    io.to(`workspace:${workspaceId}`).emit("workspace:updated", data);
+};
+
+const emitWorkspaceDeleted = (io, workspaceId, data) => {
+    io.to(`workspace:${workspaceId}`).emit("workspace:deleted", data);
+};
+
+const emitWorkspaceMemberJoined = (io, workspaceId, data) => {
+    io.to(`workspace:${workspaceId}`).emit("workspace:member-joined", data);
+};
+
+const emitWorkspaceMemberLeft = (io, workspaceId, data) => {
+    io.to(`workspace:${workspaceId}`).emit("workspace:member-left", data);
+};
+
+const emitWorkspaceRoleUpdated = (io, workspaceId, data) => {
+    io.to(`workspace:${workspaceId}`).emit("workspace:role-updated", data);
+};
+
+module.exports.emitWorkspaceUpdated = emitWorkspaceUpdated;
+module.exports.emitWorkspaceDeleted = emitWorkspaceDeleted;
+module.exports.emitWorkspaceMemberJoined = emitWorkspaceMemberJoined;
+module.exports.emitWorkspaceMemberLeft = emitWorkspaceMemberLeft;
+module.exports.emitWorkspaceRoleUpdated = emitWorkspaceRoleUpdated;
