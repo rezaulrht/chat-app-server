@@ -366,11 +366,9 @@ exports.removeMembers = async (req, res) => {
         .map((m) => m.user.toString());
       const tryingToRemoveAdmin = uniqueIds.some((id) => adminIds.includes(id));
       if (tryingToRemoveAdmin) {
-        return res
-          .status(403)
-          .json({
-            message: "Only the workspace owner can remove other admins",
-          });
+        return res.status(403).json({
+          message: "Only the workspace owner can remove other admins",
+        });
       }
     }
 
@@ -379,11 +377,9 @@ exports.removeMembers = async (req, res) => {
     const validTargets = uniqueIds.filter((id) => memberIds.includes(id));
 
     if (validTargets.length === 0) {
-      return res
-        .status(400)
-        .json({
-          message: "None of the provided users are members of this workspace",
-        });
+      return res.status(400).json({
+        message: "None of the provided users are members of this workspace",
+      });
     }
 
     await Workspace.findByIdAndUpdate(wsId, {
@@ -415,6 +411,74 @@ exports.removeMembers = async (req, res) => {
     });
   } catch (err) {
     console.error("removeMembers error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// PATCH /api/workspaces/:workspaceId/members/:targetUserId/role
+// Promote or demote a member between "admin" and "member" (admin+).
+// Cannot set role to "owner" — ownership transfers only via leaveWorkspace.
+// Body: { role: "admin" | "member" }
+// ---------------------------------------------------------------------------
+exports.updateMemberRole = async (req, res) => {
+  try {
+    const { role } = req.body;
+    const { targetUserId } = req.params;
+    const workspace = req.workspace;
+    const wsId = workspace._id;
+    const requesterId = req.user.id;
+
+    // Only "admin" and "member" are settable via this endpoint
+    if (role !== "admin" && role !== "member") {
+      return res
+        .status(400)
+        .json({ message: 'role must be "admin" or "member"' });
+    }
+
+    // Cannot modify your own role
+    if (requesterId === targetUserId) {
+      return res
+        .status(400)
+        .json({ message: "You cannot change your own role" });
+    }
+
+    // Target must be a member
+    const targetRecord = workspace.members.find(
+      (m) => m.user.toString() === targetUserId,
+    );
+    if (!targetRecord) {
+      return res
+        .status(404)
+        .json({ message: "User is not a member of this workspace" });
+    }
+
+    // Cannot change the owner's role
+    if (targetRecord.role === "owner") {
+      return res
+        .status(400)
+        .json({ message: "The workspace owner's role cannot be changed" });
+    }
+
+    await Workspace.findByIdAndUpdate(
+      wsId,
+      { $set: { "members.$[elem].role": role } },
+      { arrayFilters: [{ "elem.user": targetUserId }] },
+    );
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`workspace:${wsId}`).emit("workspace:role-updated", {
+        workspaceId: wsId,
+        targetUserId,
+        newRole: role,
+        by: requesterId,
+      });
+    }
+
+    res.json({ message: "Role updated" });
+  } catch (err) {
+    console.error("updateMemberRole error:", err.message);
     res.status(500).json({ message: "Server error" });
   }
 };
