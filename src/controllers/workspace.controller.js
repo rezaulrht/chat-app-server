@@ -568,7 +568,7 @@ exports.leaveWorkspace = async (req, res) => {
 // POST /api/workspaces/:workspaceId/invite
 // Generate a new invite link code for the workspace (admin+).
 // Produces an 8-char alphanumeric code (Discord-style, ~48 bits entropy).
-// Uses crypto.randomBytes — no new package needed.
+// Body: { expiresIn?: "30m"|"1h"|"6h"|"12h"|"1d"|"7d"|"never" }  (default: "never")
 // ---------------------------------------------------------------------------
 const INVITE_CHARSET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -577,9 +577,29 @@ const generateInviteCode = () =>
     .map((b) => INVITE_CHARSET[b % INVITE_CHARSET.length])
     .join("");
 
+const EXPIRY_DURATIONS = {
+  "30m": 30 * 60 * 1000,
+  "1h": 1 * 60 * 60 * 1000,
+  "6h": 6 * 60 * 60 * 1000,
+  "12h": 12 * 60 * 60 * 1000,
+  "1d": 1 * 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  never: null,
+};
+
 exports.generateInvite = async (req, res) => {
   try {
     const wsId = req.workspace._id;
+    const { expiresIn = "never" } = req.body;
+
+    if (!(expiresIn in EXPIRY_DURATIONS)) {
+      return res.status(400).json({
+        message: "Invalid expiresIn. Use 30m, 1h, 6h, 12h, 1d, 7d, or never",
+      });
+    }
+
+    const durationMs = EXPIRY_DURATIONS[expiresIn];
+    const expiresAt = durationMs ? new Date(Date.now() + durationMs) : null;
 
     // Generate a unique 8-char alphanumeric code; retry up to 3 times on collision
     let code;
@@ -600,11 +620,14 @@ exports.generateInvite = async (req, res) => {
       });
     }
 
-    await Workspace.findByIdAndUpdate(wsId, { $set: { inviteCode: code } });
+    await Workspace.findByIdAndUpdate(wsId, {
+      $set: { inviteCode: code, inviteCodeExpiresAt: expiresAt },
+    });
 
     res.json({
       inviteCode: code,
       inviteUrl: `${process.env.SITE_URL}/invite/${code}`,
+      expiresAt,
     });
   } catch (err) {
     console.error("generateInvite error:", err.message);
@@ -629,6 +652,14 @@ exports.joinViaInvite = async (req, res) => {
         .json({ message: "Invalid or expired invite link" });
     }
 
+    // Expiry check (null = never expires)
+    if (
+      workspace.inviteCodeExpiresAt &&
+      new Date() > workspace.inviteCodeExpiresAt
+    ) {
+      return res.status(410).json({ message: "This invite link has expired" });
+    }
+
     // Already a member?
     const alreadyMember = workspace.members.some(
       (m) => m.user.toString() === userId.toString(),
@@ -641,11 +672,9 @@ exports.joinViaInvite = async (req, res) => {
 
     // Member cap check
     if (workspace.members.length >= MAX_WORKSPACE_MEMBERS) {
-      return res
-        .status(400)
-        .json({
-          message: `Workspace has reached the member limit (${MAX_WORKSPACE_MEMBERS})`,
-        });
+      return res.status(400).json({
+        message: `Workspace has reached the member limit (${MAX_WORKSPACE_MEMBERS})`,
+      });
     }
 
     workspace.members.push({ user: userId, role: "member" });
@@ -662,6 +691,24 @@ exports.joinViaInvite = async (req, res) => {
     res.status(200).json({ ...workspace.toObject(), myRole: "member" });
   } catch (err) {
     console.error("joinViaInvite error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// DELETE /api/workspaces/:workspaceId/invite
+// Revoke the workspace invite link (admin+). Sets inviteCode to null so the
+// old code stops working immediately.
+// ---------------------------------------------------------------------------
+exports.revokeInvite = async (req, res) => {
+  try {
+    await Workspace.findByIdAndUpdate(req.workspace._id, {
+      $unset: { inviteCode: "", inviteCodeExpiresAt: "" },
+    });
+
+    res.json({ message: "Invite link revoked" });
+  } catch (err) {
+    console.error("revokeInvite error:", err.message);
     res.status(500).json({ message: "Server error" });
   }
 };

@@ -69,6 +69,12 @@ const workspaceSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+
+    // null = never expires (infinite); otherwise a UTC Date
+    inviteCodeExpiresAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true },
 );
