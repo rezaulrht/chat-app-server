@@ -327,3 +327,94 @@ exports.addMembers = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+// ---------------------------------------------------------------------------
+// PATCH /api/workspaces/:workspaceId/members/remove
+// Remove one or more members from the workspace (admin+).
+// Body: { userIds: [...] }
+// Rules:
+//   - Cannot remove the owner
+//   - Non-owner admins cannot remove other admins — only the owner can
+// ---------------------------------------------------------------------------
+exports.removeMembers = async (req, res) => {
+  try {
+    const { userIds } = req.body;
+    const workspace = req.workspace;
+    const wsId = workspace._id;
+    const requesterId = req.user.id;
+
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ message: "userIds array is required" });
+    }
+
+    const uniqueIds = [...new Set(userIds.map(String))];
+
+    // Identify the owner
+    const ownerRecord = workspace.members.find((m) => m.role === "owner");
+    const ownerId = ownerRecord?.user.toString();
+
+    if (uniqueIds.includes(ownerId)) {
+      return res
+        .status(400)
+        .json({ message: "The workspace owner cannot be removed" });
+    }
+
+    // Non-owner admins cannot remove other admins
+    if (requesterId !== ownerId) {
+      const adminIds = workspace.members
+        .filter((m) => m.role === "admin")
+        .map((m) => m.user.toString());
+      const tryingToRemoveAdmin = uniqueIds.some((id) => adminIds.includes(id));
+      if (tryingToRemoveAdmin) {
+        return res
+          .status(403)
+          .json({
+            message: "Only the workspace owner can remove other admins",
+          });
+      }
+    }
+
+    // Only remove IDs that are actually members
+    const memberIds = workspace.members.map((m) => m.user.toString());
+    const validTargets = uniqueIds.filter((id) => memberIds.includes(id));
+
+    if (validTargets.length === 0) {
+      return res
+        .status(400)
+        .json({
+          message: "None of the provided users are members of this workspace",
+        });
+    }
+
+    await Workspace.findByIdAndUpdate(wsId, {
+      $pull: { members: { user: { $in: validTargets } } },
+    });
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`workspace:${wsId}`).emit("workspace:member-left", {
+        workspaceId: wsId,
+        removedBy: requesterId,
+        removedUserIds: validTargets,
+      });
+
+      // Notify each removed user directly on all their active sockets
+      for (const userId of validTargets) {
+        const socketIds = getIsRedisConnected()
+          ? await redisClient.sMembers(`sockets:${userId}`).catch(() => [])
+          : [];
+        for (const sid of socketIds) {
+          io.to(sid).emit("workspace:kicked", { workspaceId: wsId });
+        }
+      }
+    }
+
+    res.json({
+      message: `${validTargets.length} member(s) removed`,
+      removedUserIds: validTargets,
+    });
+  } catch (err) {
+    console.error("removeMembers error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
