@@ -22,6 +22,8 @@
 const User = require("../models/User");
 const Workspace = require("../models/Workspace");
 const { MAX_WORKSPACE_MEMBERS } = require("../models/Workspace");
+const { redisClient, getIsRedisConnected } = require("../config/redis");
+const crypto = require("crypto");
 
 // ---------------------------------------------------------------------------
 // POST /api/workspaces
@@ -61,7 +63,10 @@ exports.createWorkspace = async (req, res) => {
       inviteCode: null,
     });
 
-    await workspace.populate({ path: "members.user", select: "name avatar email" });
+    await workspace.populate({
+      path: "members.user",
+      select: "name avatar email",
+    });
 
     // ── Socket: emit to room (empty until Member 3's handler auto-joins) ──
     const io = req.app.get("io");
@@ -96,9 +101,7 @@ exports.listMyWorkspaces = async (req, res) => {
       .sort({ createdAt: -1 });
 
     const result = workspaces.map((ws) => {
-      const memberRecord = ws.members.find(
-        (m) => m.user.toString() === userId,
-      );
+      const memberRecord = ws.members.find((m) => m.user.toString() === userId);
       return {
         _id: ws._id,
         name: ws.name,
@@ -192,7 +195,7 @@ exports.updateWorkspace = async (req, res) => {
       if (visibility !== "public" && visibility !== "private") {
         return res
           .status(400)
-          .json({ message: "visibility must be \"public\" or \"private\"" });
+          .json({ message: 'visibility must be "public" or "private"' });
       }
       workspace.visibility = visibility;
     }
@@ -249,6 +252,78 @@ exports.deleteWorkspace = async (req, res) => {
     res.json({ message: "Workspace deleted" });
   } catch (err) {
     console.error("deleteWorkspace error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// PATCH /api/workspaces/:workspaceId/members/add
+// Add one or more users to the workspace (admin+).
+// Body: { userIds: [...] }
+// ---------------------------------------------------------------------------
+exports.addMembers = async (req, res) => {
+  try {
+    const { userIds } = req.body;
+    const workspace = req.workspace;
+    const wsId = workspace._id;
+
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ message: "userIds array is required" });
+    }
+
+    const uniqueIds = [...new Set(userIds.map(String))];
+
+    // Strip users who are already members
+    const existingIds = workspace.members.map((m) => m.user.toString());
+    const toAdd = uniqueIds.filter((id) => !existingIds.includes(id));
+
+    if (toAdd.length === 0) {
+      return res
+        .status(400)
+        .json({ message: "All provided users are already members" });
+    }
+
+    if (existingIds.length + toAdd.length > MAX_WORKSPACE_MEMBERS) {
+      return res.status(400).json({
+        message: `Cannot exceed ${MAX_WORKSPACE_MEMBERS} members. Current: ${existingIds.length}, trying to add: ${toAdd.length}`,
+      });
+    }
+
+    // Verify all IDs exist in the User collection
+    const foundUsers = await User.find({ _id: { $in: toAdd } }).select(
+      "_id name avatar email",
+    );
+    if (foundUsers.length !== toAdd.length) {
+      return res
+        .status(400)
+        .json({ message: "One or more user IDs are invalid" });
+    }
+
+    const newEntries = foundUsers.map((u) => ({
+      user: u._id,
+      role: "member",
+      joinedAt: new Date(),
+    }));
+
+    await Workspace.findByIdAndUpdate(wsId, {
+      $push: { members: { $each: newEntries } },
+    });
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`workspace:${wsId}`).emit("workspace:member-joined", {
+        workspaceId: wsId,
+        addedBy: req.user.id,
+        newMembers: foundUsers,
+      });
+    }
+
+    res.json({
+      message: `${foundUsers.length} member(s) added`,
+      addedMembers: foundUsers,
+    });
+  } catch (err) {
+    console.error("addMembers error:", err.message);
     res.status(500).json({ message: "Server error" });
   }
 };
