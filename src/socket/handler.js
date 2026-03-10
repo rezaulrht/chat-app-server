@@ -5,12 +5,15 @@
 const jwt = require("jsonwebtoken");
 const { redisClient, getIsRedisConnected } = require("../config/redis");
 const Conversation = require("../models/Conversation");
+const Workspace = require("../models/Workspace");
 
 const createHelpers = require("./helpers");
 const registerPresenceHandlers = require("./presence");
 const registerMessageHandlers = require("./message");
 const registerConversationHandlers = require("./conversation");
 const registerTypingHandlers = require("./typing");
+const registerWorkspaceHandlers = require("./workspace");
+const registerModuleHandlers = require("./module");
 
 const socketHandler = (io) => {
   const helpers = createHelpers(io);
@@ -70,10 +73,33 @@ const socketHandler = (io) => {
       console.error("Conversation room auto-join error:", err.message);
     }
 
+    // Auto-join all workspace rooms for this user
+    try {
+      const userWorkspaces = await Workspace.find({
+        "members.user": socket.userId,
+      }).select("_id");
+
+      for (const ws of userWorkspaces) {
+        socket.join(`workspace:${ws._id}`);
+      }
+      if (userWorkspaces.length > 0) {
+        console.log(
+          `🏢 User ${socket.userId} auto-joined ${userWorkspaces.length} workspace room(s)`,
+        );
+      }
+    } catch (err) {
+      console.error("Workspace room auto-join error:", err.message);
+    }
+
     // Delegate event handling to focused modules
     registerMessageHandlers(socket, { ...helpers, io });
     registerConversationHandlers(socket, { ...helpers, io });
     const { cleanup: cleanupTyping } = registerTypingHandlers(socket, {
+      ...helpers,
+      io,
+    });
+    registerWorkspaceHandlers(socket, { ...helpers, io });
+    const { cleanup: cleanupModules } = registerModuleHandlers(socket, {
       ...helpers,
       io,
     });
@@ -88,6 +114,7 @@ const socketHandler = (io) => {
 
       cleanupPresence();
       await cleanupTyping();
+      cleanupModules();
 
       if (getIsRedisConnected()) {
         try {
