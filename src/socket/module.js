@@ -18,6 +18,7 @@
 const Workspace = require("../models/Workspace");
 const Module = require("../models/Module");
 const ModuleMessage = require("../models/ModuleMessage");
+const mongoose = require("mongoose");
 
 // Reuse same constants as typing.js
 const TYPING_AUTO_STOP_MS = 5000;
@@ -36,7 +37,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
     // ================================================================
 
     socket.on("module:join", async (moduleId) => {
-        if (!moduleId) return;
+        if (!moduleId || !mongoose.Types.ObjectId.isValid(moduleId)) return;
         try {
             // Verify module exists and user is a workspace member
             const mod = await Module.findById(moduleId).select(
@@ -101,6 +102,18 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
                     (m) => m.user.toString() === socket.userId
                 );
                 if (!memberRecord) return;
+
+                // Private module — only admins/owners or explicitly allowed members can post
+                if (mod.isPrivate) {
+                    const isAdmin =
+                        memberRecord.role === "owner" || memberRecord.role === "admin";
+                    const isAllowed = mod.allowedMembers
+                        .map(String)
+                        .includes(socket.userId);
+                    if (!isAdmin && !isAllowed) {
+                        return socket.emit("message:error", { message: "Access denied" });
+                    }
+                }
 
                 // Announcement module — only admin/owner can post
                 if (mod.type === "announcement") {
@@ -207,33 +220,41 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         if (!msgId || !moduleId || !emoji) return;
 
         try {
-            const message = await ModuleMessage.findOne({ _id: msgId, moduleId });
+            const message = await ModuleMessage.findOne({ _id: msgId, moduleId }).select(
+                "workspaceId reactions isDeleted"
+            );
             if (!message || message.isDeleted) return;
 
-            if (!message.reactions) message.reactions = new Map();
+            const workspace = await Workspace.findOne({
+                _id: message.workspaceId,
+                "members.user": socket.userId,
+            }).select("_id");
+            if (!workspace) return;
 
-            const userIdStr = socket.userId.toString();
-            let existingUsers = (message.reactions.get(emoji) || []).map((id) =>
-                id.toString()
-            );
-            const idx = existingUsers.indexOf(userIdStr);
+            const currentUsers = (message.reactions?.get(emoji) || []).map(String);
+            const idx = currentUsers.indexOf(socket.userId);
+            let newUsers;
 
             if (idx > -1) {
-                existingUsers.splice(idx, 1);
-                if (existingUsers.length === 0) {
-                    message.reactions.delete(emoji);
-                } else {
-                    message.reactions.set(emoji, existingUsers);
-                }
+                newUsers = currentUsers.filter((_, i) => i !== idx);
             } else {
-                message.reactions.set(emoji, [...existingUsers, socket.userId]);
+                newUsers = [...currentUsers, socket.userId];
             }
 
-            await message.save();
+            const updateOp = newUsers.length === 0
+                ? { $unset: { [`reactions.${emoji}`]: "" } }
+                : { $set: { [`reactions.${emoji}`]: newUsers } };
+
+            const updated = await ModuleMessage.findOneAndUpdate(
+                { _id: msgId, moduleId, isDeleted: false },
+                updateOp,
+                { new: true, select: "reactions" }
+            );
+            if (!updated) return;
 
             // Convert Map to plain object for transport
             const reactionsObj = {};
-            for (const [key, val] of message.reactions.entries()) {
+            for (const [key, val] of (updated.reactions || new Map()).entries()) {
                 reactionsObj[key] = val.map((id) => id.toString());
             }
 
@@ -257,6 +278,13 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         try {
             const message = await ModuleMessage.findOne({ _id: msgId, moduleId });
             if (!message) return;
+
+            const workspace = await Workspace.findOne({
+                _id: message.workspaceId,
+                "members.user": socket.userId,
+            }).select("_id");
+            if (!workspace) return;
+
             if (message.sender.toString() !== socket.userId) return; // sender only
             if (message.isDeleted) return;
 
@@ -328,10 +356,24 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
     socket.on("module:message:deleteForMe", async ({ msgId, moduleId }) => {
         if (!msgId || !moduleId) return;
         try {
-            await ModuleMessage.findOneAndUpdate(
-                { _id: msgId, moduleId },
-                { $addToSet: { deletedFor: socket.userId } }
+            const message = await ModuleMessage.findOne({ _id: msgId, moduleId }).select(
+                "workspaceId"
             );
+            if (!message) return;
+
+            const workspace = await Workspace.findOne({
+                _id: message.workspaceId,
+                "members.user": socket.userId,
+            }).select("_id");
+            if (!workspace) return;
+
+            const updated = await ModuleMessage.findOneAndUpdate(
+                { _id: msgId, moduleId },
+                { $addToSet: { deletedFor: socket.userId } },
+                { new: true, select: "_id" }
+            );
+            if (!updated) return;
+
             // Only notify this socket — it's a private action
             socket.emit("module:message:deletedForMe", { msgId, moduleId });
         } catch (err) {
@@ -463,6 +505,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
             // Send unread clear event to this user (all active sockets)
             await emitToUser(socket.userId, "module:unread:update", {
                 moduleId,
+                workspaceId: mod.workspaceId,
                 unreadCount: 0,
             });
 
@@ -515,6 +558,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
 
 module.exports = registerModuleHandlers;
 
+// Kept for future controller-driven socket emits outside this handler module.
 const emitModuleCreated = (io, workspaceId, data) => {
     io.to(`workspace:${workspaceId}`).emit("module:created", data);
 };

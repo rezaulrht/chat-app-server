@@ -17,6 +17,7 @@
  */
 
 const Workspace = require("../models/Workspace");
+const mongoose = require("mongoose");
 
 const registerWorkspaceHandlers = (socket, { emitToUser, io }) => {
     // ----------------------------------------------------------------
@@ -26,7 +27,7 @@ const registerWorkspaceHandlers = (socket, { emitToUser, io }) => {
     // Security: verify user is actually a member before joining.
     // ----------------------------------------------------------------
     socket.on("workspace:join", async (workspaceId) => {
-        if (!workspaceId) return;
+        if (!workspaceId || !mongoose.Types.ObjectId.isValid(workspaceId)) return;
         try {
             const workspace = await Workspace.findOne({
                 _id: workspaceId,
@@ -50,6 +51,7 @@ const registerWorkspaceHandlers = (socket, { emitToUser, io }) => {
 
 module.exports = registerWorkspaceHandlers;
 
+// Kept for future controller-driven socket emits outside this handler module.
 // Optional wrappers for controller-side emits
 const emitWorkspaceUpdated = (io, workspaceId, data) => {
     io.to(`workspace:${workspaceId}`).emit("workspace:updated", data);
