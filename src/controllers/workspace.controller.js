@@ -743,8 +743,20 @@ exports.addCategory = async (req, res) => {
       return res.status(400).json({ message: "Category name is required" });
     }
 
+    const trimmedName = name.trim();
+
+    // Reject duplicate category names (case-insensitive)
+    const duplicate = req.workspace.categories.some(
+      (c) => c.name.toLowerCase() === trimmedName.toLowerCase(),
+    );
+    if (duplicate) {
+      return res
+        .status(400)
+        .json({ message: `Category "${trimmedName}" already exists` });
+    }
+
     const newCategory = {
-      name: name.trim(),
+      name: trimmedName,
       ...(position !== undefined && { position }),
     };
 
