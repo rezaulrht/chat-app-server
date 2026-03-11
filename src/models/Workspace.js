@@ -95,8 +95,14 @@ workspaceSchema.pre("validate", function () {
 // Fast lookup: find all workspaces a user is a member of
 workspaceSchema.index({ "members.user": 1 });
 
-// Invite code lookup must be fast and unique (sparse allows multiple nulls)
-workspaceSchema.index({ inviteCode: 1 }, { unique: true, sparse: true });
+// Invite code lookup — unique only when a code exists (null workspaces are excluded)
+workspaceSchema.index(
+  { inviteCode: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { inviteCode: { $type: "string" } },
+  },
+);
 
 // ── Exports ──────────────────────────────────────────────────────
 

@@ -552,7 +552,8 @@ exports.getModuleMessages = async (req, res) => {
       });
 
     // ── 7. Return oldest-first ───────────────────────────────────
-    return res.json(messages.reverse());
+    const hasMore = messages.length === limit;
+    return res.json({ messages: messages.reverse(), hasMore });
   } catch (err) {
     console.error("getModuleMessages error:", err.message);
     return res.status(500).json({ message: "Server error" });
