@@ -22,6 +22,8 @@
 const User = require("../models/User");
 const Workspace = require("../models/Workspace");
 const { MAX_WORKSPACE_MEMBERS } = require("../models/Workspace");
+const Module = require("../models/Module");
+const ModuleMessage = require("../models/ModuleMessage");
 const { redisClient, getIsRedisConnected } = require("../config/redis");
 const crypto = require("crypto");
 
@@ -59,13 +61,24 @@ exports.createWorkspace = async (req, res) => {
       visibility: safeVisibility,
       createdBy: creatorId,
       members: [{ user: creatorId, role: "owner", joinedAt: new Date() }],
-      categories: [],
+      categories: [{ name: "General", position: 0 }],
       inviteCode: null,
     });
 
     await workspace.populate({
       path: "members.user",
       select: "name avatar email",
+    });
+
+    // ── Seed default #general module ─────────────────────────────
+    await Module.create({
+      workspaceId: workspace._id,
+      name: "general",
+      type: "text",
+      category: "General",
+      position: 0,
+      isPrivate: false,
+      createdBy: creatorId,
     });
 
     // ── Socket: emit to room (empty until Member 3's handler auto-joins) ──
@@ -245,7 +258,9 @@ exports.deleteWorkspace = async (req, res) => {
       });
     }
 
-    // TODO: delete workspace modules and messages (Member 2's domain)
+    // Cascade delete all modules and their messages
+    await ModuleMessage.deleteMany({ workspaceId });
+    await Module.deleteMany({ workspaceId });
 
     await workspace.deleteOne();
 
@@ -511,7 +526,9 @@ exports.leaveWorkspace = async (req, res) => {
           reason: "last_member_left",
         });
       }
-      // TODO: delete workspace modules and messages (Member 2's domain)
+      // Cascade delete all modules and their messages
+      await ModuleMessage.deleteMany({ workspaceId: wsId });
+      await Module.deleteMany({ workspaceId: wsId });
       await workspace.deleteOne();
       return res.json({
         message: "You were the last member; workspace has been deleted",
