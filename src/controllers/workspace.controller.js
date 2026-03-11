@@ -607,7 +607,7 @@ const EXPIRY_DURATIONS = {
 exports.generateInvite = async (req, res) => {
   try {
     const wsId = req.workspace._id;
-    const { expiresIn = "never" } = req.body;
+    const { expiresIn = "never" } = req.body || {};
 
     if (!(expiresIn in EXPIRY_DURATIONS)) {
       return res.status(400).json({
@@ -660,7 +660,7 @@ exports.generateInvite = async (req, res) => {
 exports.joinViaInvite = async (req, res) => {
   try {
     const { inviteCode } = req.params;
-    const userId = req.user._id;
+    const userId = req.user.id;
 
     const workspace = await Workspace.findOne({ inviteCode });
     if (!workspace) {

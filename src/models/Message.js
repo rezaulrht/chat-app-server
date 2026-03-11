@@ -40,8 +40,14 @@ const messageSchema = new mongoose.Schema(
 
     text: {
       type: String,
-      required: true,
+      required: false,
       trim: true,
+      default: "",
+    },
+
+    gifUrl: {
+      type: String,
+      default: null,
     },
 
     //  NEW: Thread Reply Field
