@@ -125,6 +125,7 @@ exports.listMyWorkspaces = async (req, res) => {
         memberCount: ws.members.length,
         createdBy: ws.createdBy,
         createdAt: ws.createdAt,
+        categories: ws.categories || [],
       };
     });
 
