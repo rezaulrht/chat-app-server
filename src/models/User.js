@@ -60,6 +60,13 @@ const userSchema = new mongoose.Schema(
     // resetToken
     resetToken: String,
     resetTokenExpiry: Date,
+
+    // Feed reputation
+    reputation: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
   },
   { timestamps: true },
 );

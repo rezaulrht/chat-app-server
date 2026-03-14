@@ -60,6 +60,12 @@ app.use("/api/workspaces/:workspaceId/modules", moduleRoutes);
 // Feed Routes
 app.use("/api/feed/posts", feedRoutes);
 
+// Feed stats — mounted separately to avoid /:id collision in feed.routes.js
+// Path is relative to index.js (root of chat-app-server), NOT to src/routes/
+const { getMyStats } = require("./src/controllers/feed.controller");
+const feedAuth = require("./src/middleware/auth.middleware");
+app.get("/api/feed/me/stats", feedAuth, getMyStats);
+
 // Scheduled Message Routes
 app.use("/api/messages", scheduleRoutes);
 

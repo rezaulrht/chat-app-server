@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const Post = require("../models/Post");
+const User = require("../models/User");
 
 const VALID_TYPES = [
   "post",
@@ -17,6 +18,17 @@ const SORT_PRESETS = {
   top: { commentsCount: -1, createdAt: -1 },
   oldest: { createdAt: 1 },
 };
+
+const LEVELS = [
+  { min: 0,   max: 49,  level: "Newcomer",    badge: "🟢" },
+  { min: 50,  max: 199, level: "Contributor",  badge: "🔵" },
+  { min: 200, max: 499, level: "Expert",       badge: "🟣" },
+  { min: 500, max: Infinity, level: "Legend",  badge: "🟡" },
+];
+
+function getLevel(reputation) {
+  return LEVELS.find((l) => reputation >= l.min && reputation <= l.max) ?? LEVELS[0];
+}
 
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
@@ -421,6 +433,148 @@ exports.deletePost = async (req, res) => {
     res.json({ message: "Deleted" });
   } catch (err) {
     console.error("deletePost error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// @desc    Toggle a reaction on a post
+// @route   POST /api/feed/posts/:id/react
+exports.reactToPost = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+    const { emoji } = req.body;
+
+    // Use 20 chars to accommodate multi-codepoint emoji sequences (family, flag, etc.)
+    if (!emoji || typeof emoji !== "string" || emoji.length > 20) {
+      return res.status(400).json({ message: "emoji is required" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    // Fetch post to determine add vs remove and get author id
+    const post = await Post.findById(id);
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    const authorId = post.author.toString();
+    const isSelf = authorId === userId;
+
+    // Check current reaction state before any writes
+    const existingUsers = (post.reactions?.get(emoji) ?? []).map(String);
+    const isAdding = !existingUsers.includes(userId);
+
+    let updatedPost;
+
+    if (isAdding) {
+      // Add reaction atomically
+      updatedPost = await Post.findByIdAndUpdate(
+        id,
+        {
+          $addToSet: { [`reactions.${emoji}`]: userId },
+          $inc: { reactionCount: 1 },
+        },
+        { returnDocument: "after" },
+      );
+
+      // Bonus guard — only the first writer whose filter matches wins.
+      // MongoDB document-level atomicity ensures only one concurrent caller
+      // can set bonus5Reactions: true (the second will find it already true).
+      const bonusResult = await Post.findOneAndUpdate(
+        { _id: id, bonus5Reactions: false, reactionCount: { $gte: 5 } },
+        { $set: { bonus5Reactions: true } },
+      );
+
+      if (!isSelf) {
+        // +2 for the reaction; +5 if bonus was just triggered
+        const bonusDelta = bonusResult ? 5 : 0;
+        const delta = 2 + bonusDelta;
+        await User.findByIdAndUpdate(authorId, { $inc: { reputation: delta } });
+      }
+    } else {
+      // Remove reaction.
+      // NOTE: $inc bypasses Mongoose min:0, so we compute the new count
+      // from the pre-read post value and use $set to guarantee no negatives.
+      // Bonuses already awarded are permanent — un-reacting does NOT reverse
+      // the one-time +5 milestone bonus (intentional design decision).
+      // Edge case: if bonus5Reactions was set to true via self-reacts only
+      // (no +5 awarded), a later non-author reaction will NOT re-trigger the bonus.
+      // This is also intentional — the bonus requires another user to push to 5+.
+      const newCount = Math.max(0, (post.reactionCount ?? 0) - 1);
+      updatedPost = await Post.findByIdAndUpdate(
+        id,
+        {
+          $pull: { [`reactions.${emoji}`]: userId },
+          $set: { reactionCount: newCount },
+        },
+        { returnDocument: "after" },
+      );
+
+      if (!isSelf) {
+        // Decrement only if reputation >= 2 to stay floored at 0;
+        // if it was 0 or 1, clamp to 0 explicitly.
+        const floored = await User.findOneAndUpdate(
+          { _id: authorId, reputation: { $gte: 2 } },
+          { $inc: { reputation: -2 } },
+        );
+        if (!floored) {
+          await User.findByIdAndUpdate(authorId, { $set: { reputation: 0 } });
+        }
+      }
+    }
+
+    // Guard against null in case the post was deleted between reads
+    if (!updatedPost) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    // Build plain reactions object from Map
+    const reactions = {};
+    if (updatedPost.reactions) {
+      for (const [key, value] of updatedPost.reactions.entries()) {
+        reactions[key] = value.map(String);
+      }
+    }
+
+    // Broadcast to all clients viewing this post
+    const io = req.app.get("io");
+    io.to(`feed:post:${id}`).emit("feed:post:reacted", {
+      postId: id,
+      reactions,
+      reactionCount: updatedPost.reactionCount,
+    });
+
+    res.json({ reactions, reactionCount: updatedPost.reactionCount });
+  } catch (err) {
+    console.error("reactToPost error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// @desc    Get current user's feed stats (reputation, level, postCount)
+// @route   GET /api/feed/me/stats
+exports.getMyStats = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const [user, postCount] = await Promise.all([
+      User.findById(userId, "reputation"),
+      Post.countDocuments({ author: userId, isPrivate: false }),
+    ]);
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const reputation = user.reputation ?? 0;
+    const { level, badge } = getLevel(reputation);
+
+    res.json({ reputation, level, badge, postCount });
+  } catch (err) {
+    console.error("getMyStats error:", err.message);
     res.status(500).json({ message: "Server error" });
   }
 };
