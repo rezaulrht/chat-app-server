@@ -9,6 +9,7 @@ const authRoutes = require("./src/routes/auth.routes");
 const chatRoutes = require("./src/routes/chat.routes");
 const groupRoutes = require("./src/routes/group.routes");
 const resetRoutes = require("./src/routes/reset.routes");
+const uploadRoutes = require("./src/routes/upload.routes"); // ← ADD THIS
 const passport = require("./src/config/passport");
 const { connectRedis, getIsRedisConnected } = require("./src/config/redis");
 const scheduleRoutes = require("./src/routes/schedule.routes");
@@ -44,14 +45,15 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
 // Routes
+app.use("/api/upload", uploadRoutes); // ← Upload routes
 app.use("/auth", authRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/chat", groupRoutes);
 app.use("/api/reset", resetRoutes);
-app.use("/api/reset", require("./src/routes/reset.routes"));
 
 // Workspace Routes
 app.use("/api/workspaces", workspaceRoutes);

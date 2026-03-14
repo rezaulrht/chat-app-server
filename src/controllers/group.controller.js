@@ -56,8 +56,7 @@ const joinSocketsToRoom = async (io, userIds, roomId) => {
 exports.createGroup = async (req, res) => {
   try {
     const creatorId = req.user.id;
-    const { name, participantIds, avatar } = req.body;
-
+    const { name, description, participantIds, avatar } = req.body;
     // ── Validate name ────────────────────────────────────────────
     if (!name || !name.trim()) {
       return res.status(400).json({ message: "Group name is required" });
@@ -117,6 +116,7 @@ exports.createGroup = async (req, res) => {
     const conversation = await Conversation.create({
       type: "group",
       name: name.trim(),
+      description: description?.trim() || "", // ← ADD THIS
       avatar: avatar || null,
       createdBy: creatorId,
       admins: [creatorId],
@@ -140,6 +140,7 @@ exports.createGroup = async (req, res) => {
           _id: conversation._id,
           type: "group",
           name: conversation.name,
+          description: conversation.description, // ← ADD THIS
           avatar: conversation.avatar,
           createdBy: conversation.createdBy,
           admins: conversation.admins,
@@ -154,6 +155,7 @@ exports.createGroup = async (req, res) => {
       _id: conversation._id,
       type: "group",
       name: conversation.name,
+      description: conversation.description,
       avatar: conversation.avatar,
       createdBy: conversation.createdBy,
       admins: conversation.admins,
@@ -223,6 +225,7 @@ exports.getConversationDetails = async (req, res) => {
       _id: conversation._id,
       type: "group",
       name: conversation.name,
+      description: conversation.description,
       avatar: conversation.avatar,
       createdBy: conversation.createdBy,
       admins: conversation.admins,
@@ -248,13 +251,13 @@ exports.getConversationDetails = async (req, res) => {
 // ---------------------------------------------------------------------------
 exports.updateGroupInfo = async (req, res) => {
   try {
-    const { name, avatar } = req.body;
-    const conversation = req.conversation; // attached by loadConversation middleware
+    const { name, description, avatar } = req.body;
+    const conversation = req.conversation;
 
-    if (!name && avatar === undefined) {
-      return res
-        .status(400)
-        .json({ message: "Provide name and/or avatar to update" });
+    if (!name && avatar === undefined && description === undefined) {
+      return res.status(400).json({
+        message: "Provide name, description, and/or avatar to update",
+      });
     }
 
     if (name !== undefined) {
@@ -269,11 +272,27 @@ exports.updateGroupInfo = async (req, res) => {
       conversation.name = name.trim();
     }
 
+    if (description !== undefined) {
+      if (description.trim().length > 500) {
+        return res
+          .status(400)
+          .json({ message: "Description must be 500 characters or fewer" });
+      }
+      conversation.description = description.trim();
+    }
+
     if (avatar !== undefined) {
       conversation.avatar = avatar || null;
     }
 
     await conversation.save();
+
+    // Re-populate the conversation with all related fields
+    await conversation.populate([
+      { path: "participants", select: "name avatar email" },
+      { path: "admins", select: "name avatar" },
+      { path: "createdBy", select: "name avatar" },
+    ]);
 
     // Notify all group members in real-time
     const io = req.app.get("io");
@@ -281,14 +300,24 @@ exports.updateGroupInfo = async (req, res) => {
       io.to(`conv:${conversation._id}`).emit("group:updated", {
         conversationId: conversation._id,
         name: conversation.name,
+        description: conversation.description,
         avatar: conversation.avatar,
       });
     }
 
+    // Return the FULL conversation object (not just selected fields)
     res.json({
-      message: "Group updated successfully",
+      _id: conversation._id,
+      type: conversation.type,
       name: conversation.name,
+      description: conversation.description,
       avatar: conversation.avatar,
+      createdBy: conversation.createdBy,
+      admins: conversation.admins,
+      participants: conversation.participants,
+      lastMessage: conversation.lastMessage,
+      updatedAt: conversation.updatedAt,
+      createdAt: conversation.createdAt,
     });
   } catch (err) {
     console.error("updateGroupInfo error:", err.message);
@@ -416,9 +445,24 @@ exports.addMembers = async (req, res) => {
       });
     }
 
+    // Fetch the updated conversation with populated fields
+    const updatedConversation = await Conversation.findById(conversation._id)
+      .populate("participants", "name avatar email")
+      .populate("admins", "name avatar")
+      .populate("createdBy", "name avatar");
+
     res.json({
-      message: `${toAdd.length} member(s) added successfully`,
-      addedMembers: foundUsers,
+      _id: updatedConversation._id,
+      type: "group",
+      name: updatedConversation.name,
+      description: updatedConversation.description,
+      avatar: updatedConversation.avatar,
+      createdBy: updatedConversation.createdBy,
+      admins: updatedConversation.admins,
+      participants: updatedConversation.participants,
+      lastMessage: updatedConversation.lastMessage,
+      updatedAt: updatedConversation.updatedAt,
+      createdAt: updatedConversation.createdAt,
     });
   } catch (err) {
     console.error("addMembers error:", err.message);
@@ -514,9 +558,24 @@ exports.removeMembers = async (req, res) => {
       }
     }
 
+    // Fetch the updated conversation with populated fields
+    const updatedConversation = await Conversation.findById(conversation._id)
+      .populate("participants", "name avatar email")
+      .populate("admins", "name avatar")
+      .populate("createdBy", "name avatar");
+
     res.json({
-      message: `${validTargets.length} member(s) removed successfully`,
-      removedUserIds: validTargets,
+      _id: updatedConversation._id,
+      type: "group",
+      name: updatedConversation.name,
+      description: updatedConversation.description,
+      avatar: updatedConversation.avatar,
+      createdBy: updatedConversation.createdBy,
+      admins: updatedConversation.admins,
+      participants: updatedConversation.participants,
+      lastMessage: updatedConversation.lastMessage,
+      updatedAt: updatedConversation.updatedAt,
+      createdAt: updatedConversation.createdAt,
     });
   } catch (err) {
     console.error("removeMembers error:", err.message);
@@ -564,7 +623,25 @@ exports.promoteToAdmin = async (req, res) => {
       });
     }
 
-    res.json({ message: "User promoted to admin successfully" });
+    // Fetch the updated conversation with populated fields
+    const updatedConversation = await Conversation.findById(conversation._id)
+      .populate("participants", "name avatar email")
+      .populate("admins", "name avatar")
+      .populate("createdBy", "name avatar");
+
+    res.json({
+      _id: updatedConversation._id,
+      type: "group",
+      name: updatedConversation.name,
+      description: updatedConversation.description,
+      avatar: updatedConversation.avatar,
+      createdBy: updatedConversation.createdBy,
+      admins: updatedConversation.admins,
+      participants: updatedConversation.participants,
+      lastMessage: updatedConversation.lastMessage,
+      updatedAt: updatedConversation.updatedAt,
+      createdAt: updatedConversation.createdAt,
+    });
   } catch (err) {
     console.error("promoteToAdmin error:", err.message);
     res.status(500).json({ message: "Server error" });
@@ -612,7 +689,25 @@ exports.demoteAdmin = async (req, res) => {
       });
     }
 
-    res.json({ message: "Admin demoted successfully" });
+    // Fetch the updated conversation with populated fields
+    const updatedConversation = await Conversation.findById(conversation._id)
+      .populate("participants", "name avatar email")
+      .populate("admins", "name avatar")
+      .populate("createdBy", "name avatar");
+
+    res.json({
+      _id: updatedConversation._id,
+      type: "group",
+      name: updatedConversation.name,
+      description: updatedConversation.description,
+      avatar: updatedConversation.avatar,
+      createdBy: updatedConversation.createdBy,
+      admins: updatedConversation.admins,
+      participants: updatedConversation.participants,
+      lastMessage: updatedConversation.lastMessage,
+      updatedAt: updatedConversation.updatedAt,
+      createdAt: updatedConversation.createdAt,
+    });
   } catch (err) {
     console.error("demoteAdmin error:", err.message);
     res.status(500).json({ message: "Server error" });

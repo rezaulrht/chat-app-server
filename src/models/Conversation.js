@@ -27,6 +27,13 @@ const conversationSchema = new mongoose.Schema(
       maxlength: 100,
       default: null,
     },
+    // Group description
+    description: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+      default: "",
+    },
 
     // Optional group avatar URL
     avatar: {
