@@ -471,7 +471,7 @@ exports.getUserProfile = async (req, res) => {
 
     const postCount = await Post.countDocuments({
       author: id,
-      status: "published",
+      isPrivate: false,
     });
 
     const isFollowing = user.followers.some((uid) => uid.toString() === myId);
@@ -518,12 +518,12 @@ exports.getUserPosts = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const [posts, total] = await Promise.all([
-      Post.find({ author: id, status: "published" })
+      Post.find({ author: id, isPrivate: false })
         .sort({ isPinned: -1, createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .populate("author", "name avatar reputation"),
-      Post.countDocuments({ author: id, status: "published" }),
+      Post.countDocuments({ author: id, isPrivate: false }),
     ]);
 
     const hasMore = skip + posts.length < total;
@@ -557,6 +557,73 @@ exports.getTopContributors = async (req, res) => {
     return res.json(leaderboard);
   } catch (err) {
     console.error("getTopContributors error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/feed/posts/:id/react
+// Toggle emoji reaction on a post.
+// ---------------------------------------------------------------------------
+exports.reactToPost = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+    const { emoji } = req.body;
+
+    if (!emoji || !emoji.trim()) {
+      return res.status(400).json({ message: "Emoji is required" });
+    }
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    const post = await Post.findById(id);
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    const reactions = post.reactions || new Map();
+    const currentUsers = reactions.get(emoji) || [];
+    const alreadyReacted = currentUsers.map(String).includes(userId);
+
+    if (alreadyReacted) {
+      const updated = currentUsers.filter((uid) => uid.toString() !== userId);
+      if (updated.length === 0) reactions.delete(emoji);
+      else reactions.set(emoji, updated);
+    } else {
+      reactions.set(emoji, [...currentUsers, userId]);
+    }
+
+    post.reactions = reactions;
+
+    let total = 0;
+    for (const users of post.reactions.values()) total += users.length;
+    post.reactionCount = total;
+
+    await post.save();
+
+    const reactionsObj = {};
+    for (const [key, val] of post.reactions.entries()) {
+      reactionsObj[key] = val;
+    }
+
+    req.app.get("io").to(`feed:post:${id}`).emit("feed:post:reacted", {
+      postId: id,
+      reactions: reactionsObj,
+      reactionCount: post.reactionCount,
+    });
+
+    if (post.author.toString() !== userId) {
+      await User.findByIdAndUpdate(post.author, {
+        $inc: { reputation: alreadyReacted ? -2 : 2 },
+      });
+    }
+
+    return res.json({
+      reactions: reactionsObj,
+      reactionCount: post.reactionCount,
+    });
+  } catch (err) {
+    console.error("reactToPost error:", err.message);
     return res.status(500).json({ message: "Server error" });
   }
 };
