@@ -37,6 +37,40 @@ const moduleMessageSchema = new mongoose.Schema(
       ref: "ModuleMessage",
       default: null,
     },
+    //  NEW: Thread Metadata
+    replyCount: {
+      type: Number,
+      default: 0,
+    },
+    lastReplyAt: {
+      type: Date,
+      default: null,
+    },
+    //  NEW: Attachments
+    attachments: [
+      {
+        url: { type: String, required: true },
+        publicId: { type: String },
+        resourceType: { type: String },
+        format: { type: String },
+        name: { type: String },
+        size: { type: Number },
+      },
+    ],
+    //  NEW: Pinning Logic
+    isPinned: {
+      type: Boolean,
+      default: false,
+    },
+    pinnedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    pinnedAt: {
+      type: Date,
+      default: null,
+    },
 
     // Per-user read tracking (same shape as Message.readBy)
     readBy: [
@@ -79,5 +113,8 @@ moduleMessageSchema.index({ moduleId: 1, _id: 1 });
 
 // Sender history
 moduleMessageSchema.index({ sender: 1, createdAt: -1 });
+
+// Text index for scoped search
+moduleMessageSchema.index({ moduleId: 1, text: "text" });
 
 module.exports = mongoose.model("ModuleMessage", moduleMessageSchema);

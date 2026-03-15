@@ -58,6 +58,13 @@ const moduleSchema = new mongoose.Schema(
       },
     ],
 
+    // NEW: Role-based access for private channels
+    allowedRoles: [
+      {
+        type: mongoose.Schema.Types.ObjectId, // Refs to workspace.roles (it's embedded but we can store ID)
+      },
+    ],
+
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

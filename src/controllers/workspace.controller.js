@@ -143,6 +143,44 @@ exports.listMyWorkspaces = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
+// GET /api/workspaces/discover
+// List public workspaces for discovery.
+// Query: query? (search by name), limit? (default 20)
+// ---------------------------------------------------------------------------
+exports.discoverWorkspaces = async (req, res) => {
+  try {
+    const { query, limit = 20 } = req.query;
+    const filter = { visibility: "public" };
+
+    if (query?.trim()) {
+      filter.name = { $regex: query.trim(), $options: "i" };
+    }
+
+    const workspaces = await Workspace.find(filter)
+      .select("name description avatar banner createdBy members createdAt")
+      .populate("createdBy", "name avatar")
+      .limit(parseInt(limit))
+      .sort({ createdAt: -1 });
+
+    const result = workspaces.map((ws) => ({
+      _id: ws._id,
+      name: ws.name,
+      avatar: ws.avatar,
+      banner: ws.banner,
+      description: ws.description,
+      memberCount: ws.members.length,
+      createdBy: ws.createdBy,
+      createdAt: ws.createdAt,
+    }));
+
+    res.json(result);
+  } catch (err) {
+    console.error("discoverWorkspaces error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
 // GET /api/workspaces/:workspaceId
 // Get full workspace details including populated members and categories.
 // req.workspace and req.memberRecord are attached by middleware.
@@ -173,7 +211,7 @@ exports.getWorkspace = async (req, res) => {
 // ---------------------------------------------------------------------------
 exports.updateWorkspace = async (req, res) => {
   try {
-    const { name, description, avatar, visibility } = req.body;
+    const { name, description, avatar, banner, visibility } = req.body;
     const workspace = req.workspace; // attached by loadWorkspace
 
     // ── Require at least one field ───────────────────────────────
@@ -181,6 +219,7 @@ exports.updateWorkspace = async (req, res) => {
       name === undefined &&
       description === undefined &&
       avatar === undefined &&
+      banner === undefined &&
       visibility === undefined
     ) {
       return res
@@ -211,6 +250,10 @@ exports.updateWorkspace = async (req, res) => {
       workspace.avatar = avatar || null;
     }
 
+    if (banner !== undefined) {
+      workspace.banner = banner || null;
+    }
+
     if (visibility !== undefined) {
       if (visibility !== "public" && visibility !== "private") {
         return res
@@ -229,6 +272,7 @@ exports.updateWorkspace = async (req, res) => {
         name: workspace.name,
         description: workspace.description,
         avatar: workspace.avatar,
+        banner: workspace.banner,
         visibility: workspace.visibility,
       });
     }
@@ -238,6 +282,7 @@ exports.updateWorkspace = async (req, res) => {
       name: workspace.name,
       description: workspace.description,
       avatar: workspace.avatar,
+      banner: workspace.banner,
       visibility: workspace.visibility,
     });
   } catch (err) {
