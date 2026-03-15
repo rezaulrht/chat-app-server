@@ -242,9 +242,9 @@ exports.getPosts = async (req, res) => {
     if (tab === "following") {
       const me = await User.findById(userId).select("following");
       const followingIds = me?.following || [];
+      // Show only non-private posts from followed users (preserves privacy)
+      filter.$or = [{ isPrivate: false }, { author: userId }];
       filter.author = { $in: followingIds };
-      // Remove private restriction for following feed
-      delete filter.$or;
     }
 
     const tags = normalizeTags(req.query.tags);
@@ -625,10 +625,18 @@ exports.reactToPost = async (req, res) => {
       reactionCount: post.reactionCount,
     });
 
+    // Reputation update is non-fatal — wrapped separately
     if (post.author.toString() !== userId) {
-      await User.findByIdAndUpdate(post.author, {
-        $inc: { reputation: alreadyReacted ? -2 : 2 },
-      });
+      try {
+        await User.findByIdAndUpdate(post.author, {
+          $inc: { reputation: alreadyReacted ? -2 : 2 },
+        });
+      } catch (repErr) {
+        console.warn(
+          "reactToPost: reputation update failed (non-fatal):",
+          repErr.message,
+        );
+      }
     }
 
     return res.json({
