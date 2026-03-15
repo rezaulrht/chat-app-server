@@ -16,6 +16,7 @@ const scheduleRoutes = require("./src/routes/schedule.routes");
 const workspaceRoutes = require("./src/routes/workspace.routes");
 const moduleRoutes = require("./src/routes/module.routes");
 const feedRoutes = require("./src/routes/feed.routes");
+const pinRoutes = require("./src/routes/pin.routes");
 const mongoose = require("mongoose");
 
 const port = process.env.PORT || 3000;
@@ -54,6 +55,7 @@ app.use("/auth", authRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/chat", groupRoutes);
 app.use("/api/reset", resetRoutes);
+app.use("/api/chat/conversations/:id", pinRoutes); // Pin routes nested under conversations
 
 // Workspace Routes
 app.use("/api/workspaces", workspaceRoutes);
