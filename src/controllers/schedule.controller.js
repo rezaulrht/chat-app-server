@@ -22,12 +22,12 @@ exports.createScheduledMessage = async (req, res) => {
     const userId = getAuthUserId(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const { conversationId, content, sendAt, idempotencyKey } = req.body;
+    const { conversationId, moduleId, workspaceId, content, sendAt, idempotencyKey } = req.body;
 
-    if (!conversationId || !content || !sendAt) {
+    if ((!conversationId && !moduleId) || !content || !sendAt) {
       return res
         .status(400)
-        .json({ error: "conversationId, content, sendAt are required" });
+        .json({ error: "conversationId or moduleId, along with content and sendAt are required" });
     }
 
     const sendTime = new Date(sendAt);
@@ -48,6 +48,8 @@ exports.createScheduledMessage = async (req, res) => {
 
     const scheduled = await ScheduledMessage.create({
       conversationId,
+      moduleId,
+      workspaceId,
       senderId: userId,
       content: content.trim(),
       sendAt: sendTime,
@@ -82,16 +84,19 @@ exports.listScheduledMessages = async (req, res) => {
     const userId = getAuthUserId(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const { conversationId } = req.query;
-    if (!conversationId) {
-      return res.status(400).json({ error: "conversationId is required" });
+    const { conversationId, moduleId } = req.query;
+    if (!conversationId && !moduleId) {
+      return res.status(400).json({ error: "conversationId or moduleId is required" });
     }
 
-    const rows = await ScheduledMessage.find({
-      conversationId,
+    const query = {
       senderId: userId, // only yours
       status: { $in: ["scheduled", "sending"] },
-    }).sort({ sendAt: 1 });
+    };
+    if (conversationId) query.conversationId = conversationId;
+    if (moduleId) query.moduleId = moduleId;
+
+    const rows = await ScheduledMessage.find(query).sort({ sendAt: 1 });
 
     return res.json(rows);
   } catch (err) {
