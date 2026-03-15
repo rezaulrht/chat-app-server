@@ -19,6 +19,17 @@ const SORT_PRESETS = {
   oldest: { createdAt: 1 },
 };
 
+const LEVELS = [
+  { min: 0,   max: 49,  level: "Newcomer",    badge: "🟢" },
+  { min: 50,  max: 199, level: "Contributor",  badge: "🔵" },
+  { min: 200, max: 499, level: "Expert",       badge: "🟣" },
+  { min: 500, max: Infinity, level: "Legend",  badge: "🟡" },
+];
+
+function getLevel(reputation) {
+  return LEVELS.find((l) => reputation >= l.min && reputation <= l.max) ?? LEVELS[0];
+}
+
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
 const clampInt = (value, fallback, min, max) => {

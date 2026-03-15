@@ -15,6 +15,7 @@ const registerConversationHandlers = require("./conversation");
 const registerTypingHandlers = require("./typing");
 const registerWorkspaceHandlers = require("./workspace");
 const registerModuleHandlers = require("./module");
+const registerFeedHandlers = require("./feed");
 
 const socketHandler = (io) => {
   const helpers = createHelpers(io);
@@ -104,6 +105,7 @@ const socketHandler = (io) => {
       ...helpers,
       io,
     });
+    registerFeedHandlers(socket);
 
     // ----------------------------------------------------------------
     // Handle disconnection — clean up Redis mapping

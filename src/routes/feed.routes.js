@@ -44,4 +44,9 @@ router.patch("/:id", updatePost);
 // @access  Post owner only
 router.delete("/:id", deletePost);
 
+// @route   POST /api/feed/posts/:id/react
+// @desc    Toggle a reaction emoji on a post
+// @access  Authenticated
+router.post("/:id/react", reactToPost);
+
 module.exports = router;

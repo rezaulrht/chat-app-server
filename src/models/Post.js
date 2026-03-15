@@ -218,10 +218,21 @@ const postSchema = new mongoose.Schema(
       }),
     },
 
-    reactionsCount: {
+    reactions: {
       type: Map,
-      of: Number,
+      of: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
       default: {},
+    },
+
+    reactionCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    bonus5Reactions: {
+      type: Boolean,
+      default: false,
     },
 
     commentsCount: {
@@ -288,5 +299,6 @@ postSchema.pre("validate", function () {
 postSchema.index({ createdAt: -1 });
 postSchema.index({ type: 1, createdAt: -1 });
 postSchema.index({ isPrivate: 1, createdAt: -1 });
+postSchema.index({ reactionCount: -1, createdAt: -1 });
 
 module.exports = mongoose.model("Post", postSchema);
