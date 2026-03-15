@@ -9,41 +9,26 @@ const {
   updatePost,
   deletePost,
   reactToPost,
-  followUser,
-  getUserProfile,
-  getUserPosts,
-  getTopContributors,
-  reactToPost,
 } = require("../controllers/feed.controller");
 
-// All routes require authentication
 router.use(auth);
 
-// ── Posts ────────────────────────────────────────────────────────────────────
-
 // @route   GET /api/feed/posts
-// @desc    Get paginated feed posts (tab=latest|trending|top|following|qa)
-// @access  Authenticated
 router.get("/", getPosts);
 
 // @route   GET /api/feed/posts/:id
-// @desc    Get a single post
-// @access  Authenticated
 router.get("/:id", getPost);
 
 // @route   POST /api/feed/posts
-// @desc    Create a new post
-// @access  Authenticated
 router.post("/", createPost);
 
 // @route   PATCH /api/feed/posts/:id
-// @desc    Update own post
-// @access  Post owner only
 router.patch("/:id", updatePost);
 
 // @route   DELETE /api/feed/posts/:id
-// @desc    Delete own post
-// @access  Post owner only
 router.delete("/:id", deletePost);
+
+// @route   POST /api/feed/posts/:id/react
+router.post("/:id/react", reactToPost);
 
 module.exports = router;

@@ -1,7 +1,6 @@
 const mongoose = require("mongoose");
 const Post = require("../models/Post");
 const User = require("../models/User");
-const User = require("../models/User");
 
 const VALID_TYPES = [
   "post",
@@ -21,14 +20,16 @@ const SORT_PRESETS = {
 };
 
 const LEVELS = [
-  { min: 0,   max: 49,  level: "Newcomer",    badge: "🟢" },
-  { min: 50,  max: 199, level: "Contributor",  badge: "🔵" },
-  { min: 200, max: 499, level: "Expert",       badge: "🟣" },
-  { min: 500, max: Infinity, level: "Legend",  badge: "🟡" },
+  { min: 0, max: 49, level: "Newcomer", badge: "🟢" },
+  { min: 50, max: 199, level: "Contributor", badge: "🔵" },
+  { min: 200, max: 499, level: "Expert", badge: "🟣" },
+  { min: 500, max: Infinity, level: "Legend", badge: "🟡" },
 ];
 
 function getLevel(reputation) {
-  return LEVELS.find((l) => reputation >= l.min && reputation <= l.max) ?? LEVELS[0];
+  return (
+    LEVELS.find((l) => reputation >= l.min && reputation <= l.max) ?? LEVELS[0]
+  );
 }
 
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
