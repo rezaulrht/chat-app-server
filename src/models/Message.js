@@ -105,6 +105,50 @@ const messageSchema = new mongoose.Schema(
       of: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
       default: {},
     },
+    // ────────────────────────────────────────────────────────
+    // ✅ NEW: Poll Data
+    // ────────────────────────────────────────────────────────
+    poll: {
+      question: {
+        type: String,
+        trim: true,
+        maxlength: 500,
+      },
+      options: [
+        {
+          id: {
+            type: String,
+            required: true,
+          },
+          text: {
+            type: String,
+            required: true,
+            trim: true,
+            maxlength: 200,
+          },
+          votes: [
+            {
+              type: mongoose.Schema.Types.ObjectId,
+              ref: "User",
+            },
+          ],
+        },
+      ],
+      allowMultiple: {
+        type: Boolean,
+        default: false,
+      },
+      expiresAt: {
+        type: Date,
+      },
+      createdBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        required: function () {
+          return !!this.poll && !!this.poll.question; // ✅ Only required if poll exists
+        },
+      },
+    },
   },
   { timestamps: true },
 );
@@ -135,5 +179,42 @@ messageSchema.index({ replyTo: 1 });
 
 // Scheduled Messages
 messageSchema.index({ scheduledFromId: 1 }, { unique: true, sparse: true });
+
+
+// ──────────────────────────────────────────────────────────
+// ✅ Virtual field: Check if poll is expired
+// ──────────────────────────────────────────────────────────
+messageSchema.virtual("isPollExpired").get(function () {
+  if (!this.poll || !this.poll.expiresAt) return false;
+  return new Date() > this.poll.expiresAt;
+});
+
+// ──────────────────────────────────────────────────────────
+// ✅ Method: Get total vote count for a poll
+// ──────────────────────────────────────────────────────────
+messageSchema.methods.getTotalVotes = function () {
+  if (!this.poll) return 0;
+  
+  return this.poll.options.reduce((total, option) => {
+    return total + (option.votes?.length || 0);
+  }, 0);
+};
+
+// ✅ Method: Get vote percentages
+// ────────────────────────────────────────────────────────
+messageSchema.methods.getPollResults = function () {
+  if (!this.poll) return [];
+
+  const totalVotes = this.getTotalVotes();
+  
+  return this.poll.options.map((option) => ({
+    id: option.id,
+    text: option.text,
+    voteCount: option.votes?.length || 0,
+    percentage: totalVotes > 0 
+      ? Math.round(((option.votes?.length || 0) / totalVotes) * 100) 
+      : 0,
+    voters: option.votes || [],
+  }))};
 
 module.exports = mongoose.model("Message", messageSchema);
