@@ -7,25 +7,29 @@ const Conversation = require("../models/Conversation");
 
 exports.createPoll = async (req, res) => {
   try {
-    // ✅ FIX: removed sensitive console logs, minimal log only
+    // ✅ Minimal, non-sensitive logging
     console.log("POST /polls - request received");
 
     const userId = req.user.id;
     const { conversationId } = req.params;
     const { question, options, allowMultiple, expiresAt } = req.body;
 
+    // ──────────────────────────────────────────────────────────
     // Validation
+    // ──────────────────────────────────────────────────────────
+
     if (!question?.trim()) {
       return res.status(400).json({ message: "Poll question is required" });
     }
 
-    // ✅ FIX: safe options validation (type + trim)
+    // ✅ Validate options is array
     if (!Array.isArray(options)) {
       return res.status(400).json({
         message: "Options must be an array",
       });
     }
 
+    // ✅ Validate each option is a non-empty string
     const cleanedOptions = [];
 
     for (const opt of options) {
@@ -58,7 +62,10 @@ exports.createPoll = async (req, res) => {
       });
     }
 
-    // Check conversation
+    // ──────────────────────────────────────────────────────────
+    // Check conversation and membership
+    // ──────────────────────────────────────────────────────────
+
     const conversation = await Conversation.findById(conversationId);
 
     if (!conversation) {
@@ -75,14 +82,20 @@ exports.createPoll = async (req, res) => {
       });
     }
 
-    // Format options (use cleaned)
+    // ──────────────────────────────────────────────────────────
+    // Format options with unique IDs
+    // ──────────────────────────────────────────────────────────
+
     const formattedOptions = cleanedOptions.map((opt, index) => ({
       id: `opt${index + 1}`,
       text: opt,
       votes: [],
     }));
 
-    // Expiry
+    // ──────────────────────────────────────────────────────────
+    // Parse expiry date (if provided)
+    // ──────────────────────────────────────────────────────────
+
     let expiryDate = null;
     if (expiresAt) {
       expiryDate = new Date(expiresAt);
@@ -98,6 +111,10 @@ exports.createPoll = async (req, res) => {
       }
     }
 
+    // ──────────────────────────────────────────────────────────
+    // Create poll message
+    // ──────────────────────────────────────────────────────────
+
     const pollMessage = await Message.create({
       conversationId,
       sender: userId,
@@ -111,9 +128,13 @@ exports.createPoll = async (req, res) => {
       status: "sent",
     });
 
+    // Populate sender details
     await pollMessage.populate("sender", "name avatar");
 
-    // ✅ FIX: increment unreadCount for others
+    // ──────────────────────────────────────────────────────────
+    // Update conversation lastMessage
+    // ──────────────────────────────────────────────────────────
+
     await Conversation.findByIdAndUpdate(conversationId, {
       lastMessage: {
         text: `📊 Poll: ${question.slice(0, 50)}${
@@ -125,28 +146,32 @@ exports.createPoll = async (req, res) => {
       updatedAt: pollMessage.createdAt,
     });
 
-    // separate update for unread count
-    await Conversation.updateOne(
-      { _id: conversationId },
-      {
-        $inc: {
-          "participants.$[elem].unreadCount": 1,
-        },
-      },
-      {
-        arrayFilters: [{ elem: { $ne: userId } }],
-      },
-    );
+    // ──────────────────────────────────────────────────────────
+    // Socket broadcast to all participants
+    // ──────────────────────────────────────────────────────────
 
     const io = req.app.get("io");
     if (io) {
-      io.to(`conv:${conversationId}`).emit("message:new", pollMessage);
+      try {
+        // ✅ Convert to plain object to avoid circular references
+        const pollData = pollMessage.toObject();
+
+        console.log("Broadcasting poll to room:", `conv:${conversationId}`);
+        io.to(`conv:${conversationId}`).emit("message:new", pollData);
+      } catch (broadcastErr) {
+        console.error("Socket broadcast error:", broadcastErr);
+        // Don't fail the request - poll was created successfully
+      }
     }
+
+    // ──────────────────────────────────────────────────────────
+    // Return response
+    // ──────────────────────────────────────────────────────────
 
     res.status(201).json(pollMessage);
   } catch (err) {
-    console.error("createPoll error:", err.message);
-    res.status(500).json({ message: "Server error" });
+    console.error("createPoll error:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
   }
 };
 
@@ -160,6 +185,10 @@ exports.votePoll = async (req, res) => {
     const { messageId } = req.params;
     const { optionId } = req.body;
 
+    // ──────────────────────────────────────────────────────────
+    // Load message
+    // ──────────────────────────────────────────────────────────
+
     const message = await Message.findById(messageId);
 
     if (!message) {
@@ -170,13 +199,20 @@ exports.votePoll = async (req, res) => {
       return res.status(400).json({ message: "This is not a poll message" });
     }
 
-    if (message.isPollExpired) {
+    // ──────────────────────────────────────────────────────────
+    // Check if poll expired
+    // ──────────────────────────────────────────────────────────
+
+    if (message.poll.expiresAt && new Date() > message.poll.expiresAt) {
       return res.status(400).json({ message: "This poll has expired" });
     }
 
+    // ──────────────────────────────────────────────────────────
+    // ✅ Load conversation and verify membership
+    // ──────────────────────────────────────────────────────────
+
     const conversation = await Conversation.findById(message.conversationId);
 
-    // ✅ FIX: null check before using participants
     if (!conversation) {
       return res.status(404).json({ message: "Conversation not found" });
     }
@@ -191,20 +227,31 @@ exports.votePoll = async (req, res) => {
       });
     }
 
+    // ──────────────────────────────────────────────────────────
+    // Find the option
+    // ──────────────────────────────────────────────────────────
+
     const option = message.poll.options.find((opt) => opt.id === optionId);
 
     if (!option) {
       return res.status(404).json({ message: "Option not found" });
     }
 
+    // ──────────────────────────────────────────────────────────
+    // Toggle vote
+    // ──────────────────────────────────────────────────────────
+
     const hasVotedThisOption = option.votes.some(
       (v) => v.toString() === userId,
     );
 
     if (hasVotedThisOption) {
+      // Remove vote (toggle)
       option.votes = option.votes.filter((v) => v.toString() !== userId);
     } else {
+      // New vote
       if (!message.poll.allowMultiple) {
+        // Remove votes from other options (single choice)
         message.poll.options.forEach((opt) => {
           opt.votes = opt.votes.filter((v) => v.toString() !== userId);
         });
@@ -212,38 +259,51 @@ exports.votePoll = async (req, res) => {
       option.votes.push(userId);
     }
 
+    // ──────────────────────────────────────────────────────────
+    // Save (mark modified for nested updates)
+    // ──────────────────────────────────────────────────────────
+
+    message.markModified("poll");
     await message.save();
 
+    // Reload with populated data
     await message.populate("sender", "name avatar");
     await message.populate("poll.options.votes", "name avatar");
+
+    // ──────────────────────────────────────────────────────────
+    // Socket broadcast
+    // ──────────────────────────────────────────────────────────
 
     const io = req.app.get("io");
     if (io) {
       io.to(`conv:${message.conversationId}`).emit("poll:updated", {
         messageId: message._id,
         poll: message.poll,
-        results: message.getPollResults(),
       });
     }
 
     res.json({
       message: "Vote recorded",
       poll: message.poll,
-      results: message.getPollResults(),
     });
   } catch (err) {
-    console.error("votePoll error:", err.message);
-    res.status(500).json({ message: "Server error" });
+    console.error("votePoll error:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
   }
 };
 
 // ──────────────────────────────────────────────────────────
-// Get Poll Results
+// Get Poll Results (with access control)
 // ──────────────────────────────────────────────────────────
 
 exports.getPollResults = async (req, res) => {
   try {
     const { messageId } = req.params;
+    const userId = req.user.id;
+
+    // ──────────────────────────────────────────────────────────
+    // Load message
+    // ──────────────────────────────────────────────────────────
 
     const message = await Message.findById(messageId)
       .populate("sender", "name avatar")
@@ -257,7 +317,10 @@ exports.getPollResults = async (req, res) => {
       return res.status(400).json({ message: "This is not a poll message" });
     }
 
-    // ✅ FIX: membership check before returning data
+    // ──────────────────────────────────────────────────────────
+    // ✅ Verify user is a member of the conversation
+    // ──────────────────────────────────────────────────────────
+
     const conversation = await Conversation.findById(message.conversationId);
 
     if (!conversation) {
@@ -265,23 +328,29 @@ exports.getPollResults = async (req, res) => {
     }
 
     const isMember = conversation.participants.some(
-      (p) => p.toString() === req.user.id,
+      (p) => p.toString() === userId,
     );
 
     if (!isMember) {
       return res.status(403).json({
-        message: "Forbidden: not a conversation member",
+        message: "You are not a member of this conversation",
       });
     }
+
+    // ──────────────────────────────────────────────────────────
+    // Return results
+    // ──────────────────────────────────────────────────────────
 
     res.json({
       poll: message.poll,
       results: message.getPollResults(),
       totalVotes: message.getTotalVotes(),
-      isExpired: message.isPollExpired,
+      isExpired: message.poll.expiresAt
+        ? new Date() > message.poll.expiresAt
+        : false,
     });
   } catch (err) {
-    console.error("getPollResults error:", err.message);
-    res.status(500).json({ message: "Server error" });
+    console.error("getPollResults error:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
   }
 };
