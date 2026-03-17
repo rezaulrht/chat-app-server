@@ -182,39 +182,51 @@ messageSchema.index({ scheduledFromId: 1 }, { unique: true, sparse: true });
 
 
 // ──────────────────────────────────────────────────────────
-// ✅ Virtual field: Check if poll is expired
-// ──────────────────────────────────────────────────────────
-messageSchema.virtual("isPollExpired").get(function () {
-  if (!this.poll || !this.poll.expiresAt) return false;
-  return new Date() > this.poll.expiresAt;
-});
-
-// ──────────────────────────────────────────────────────────
-// ✅ Method: Get total vote count for a poll
+// Get total votes
 // ──────────────────────────────────────────────────────────
 messageSchema.methods.getTotalVotes = function () {
-  if (!this.poll) return 0;
-  
-  return this.poll.options.reduce((total, option) => {
-    return total + (option.votes?.length || 0);
+  if (!this.poll || !Array.isArray(this.poll.options)) {
+    return 0;
+  }
+
+  return this.poll.options.reduce((total, opt) => {
+    return total + (Array.isArray(opt.votes) ? opt.votes.length : 0);
   }, 0);
 };
 
-// ✅ Method: Get vote percentages
-// ────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────
+// Check if poll expired
+// ──────────────────────────────────────────────────────────
+messageSchema.methods.isPollExpired = function () {
+  if (!this.poll || !this.poll.expiresAt) {
+    return false;
+  }
+
+  return new Date() > new Date(this.poll.expiresAt);
+};
+
+// ──────────────────────────────────────────────────────────
+// Get poll results
+// ──────────────────────────────────────────────────────────
 messageSchema.methods.getPollResults = function () {
-  if (!this.poll) return [];
+  if (!this.poll || !Array.isArray(this.poll.options)) {
+    return [];
+  }
 
   const totalVotes = this.getTotalVotes();
-  
-  return this.poll.options.map((option) => ({
-    id: option.id,
-    text: option.text,
-    voteCount: option.votes?.length || 0,
-    percentage: totalVotes > 0 
-      ? Math.round(((option.votes?.length || 0) / totalVotes) * 100) 
-      : 0,
-    voters: option.votes || [],
-  }))};
+
+  return this.poll.options.map((opt) => {
+    const voteCount = Array.isArray(opt.votes) ? opt.votes.length : 0;
+
+    return {
+      id: opt.id,
+      text: opt.text,
+      votes: voteCount,
+      percentage: totalVotes > 0
+        ? Math.round((voteCount / totalVotes) * 100)
+        : 0,
+    };
+  });
+};
 
 module.exports = mongoose.model("Message", messageSchema);

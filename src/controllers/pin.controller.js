@@ -1,83 +1,95 @@
 const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
 
+// ──────────────────────────────────────────────────────────
+// Shared populate spec for pinned messages
+// ──────────────────────────────────────────────────────────
+const PINNED_MESSAGE_POPULATE = {
+  path: "pinnedMessages.messageId",
+  select: "text gifUrl sender createdAt",
+  populate: { path: "sender", select: "name avatar" },
+};
+
 // ---------------------------------------------------------------------------
-// POST /api/chat/conversations/:id/messages/:messageId/pin
-// Pin a message (admin-only for groups, anyone for DMs)
+// PIN MESSAGE
 // ---------------------------------------------------------------------------
 exports.pinMessage = async (req, res) => {
   try {
     const userId = req.user.id;
     const { id: conversationId, messageId } = req.params;
-    const conversation = req.conversation; // from middleware
+    const conversation = req.conversation;
 
-    // Verify message exists and belongs to this conversation
     const message = await Message.findOne({
       _id: messageId,
-      conversationId: conversationId,
+      conversationId,
     });
 
     if (!message) {
       return res.status(404).json({ message: "Message not found" });
     }
 
-    // // For groups, only admins can pin
-    // if (conversation.type === "group") {
-    //   const isAdmin = conversation.admins.some(
-    //     (adminId) => adminId.toString() === userId,
-    //   );
-    //   if (!isAdmin) {
-    //     return res
-    //       .status(403)
-    //       .json({ message: "Only admins can pin messages in groups" });
-    //   }
-    // }
+    // Admin check for groups
+    if (conversation.type === "group") {
+      const isAdmin = conversation.admins.some(
+        (adminId) => adminId.toString() === userId,
+      );
+      if (!isAdmin) {
+        return res
+          .status(403)
+          .json({ message: "Only admins can pin messages in groups" });
+      }
+    }
 
-    // Check if already pinned
-    const alreadyPinned = conversation.pinnedMessages.some(
-      (pm) => pm.messageId.toString() === messageId,
+    // Atomic update
+    const updatedConversation = await Conversation.findOneAndUpdate(
+      {
+        _id: conversation._id,
+        "pinnedMessages.messageId": { $ne: messageId },
+        $expr: { $lt: [{ $size: "$pinnedMessages" }, 3] },
+      },
+      {
+        $push: {
+          pinnedMessages: {
+            messageId,
+            pinnedBy: userId,
+            pinnedAt: new Date(),
+          },
+        },
+      },
+      { new: true },
     );
 
-    if (alreadyPinned) {
-      return res.status(400).json({ message: "Message is already pinned" });
+    if (!updatedConversation) {
+      const alreadyPinned = conversation.pinnedMessages.some(
+        (pm) => pm.messageId.toString() === messageId,
+      );
+
+      if (alreadyPinned) {
+        return res.status(400).json({ message: "Message is already pinned" });
+      }
+
+      return res
+        .status(400)
+        .json({ message: "Maximum 3 messages can be pinned" });
     }
 
-    // Limit to 3 pinned messages (you can adjust this)
-    if (conversation.pinnedMessages.length >= 3) {
-      return res.status(400).json({
-        message: "Maximum 3 messages can be pinned. Unpin one first.",
-      });
-    }
+    // ────────────────────────────────────────────────────────
+    // Populate pinned messages using centralized spec
+    // ────────────────────────────────────────────────────────
+    await updatedConversation.populate(PINNED_MESSAGE_POPULATE);
 
-    // Add to pinned messages
-    conversation.pinnedMessages.push({
-      messageId: messageId,
-      pinnedBy: userId,
-      pinnedAt: new Date(),
-    });
-
-    await conversation.save();
-
-    // Populate the message details for response
-    await conversation.populate({
-      path: "pinnedMessages.messageId",
-      select: "text gifUrl sender createdAt",
-      populate: { path: "sender", select: "name avatar" },
-    });
-
-    // Socket broadcast
     const io = req.app.get("io");
     if (io) {
       io.to(`conv:${conversationId}`).emit("message:pinned", {
         conversationId,
-        pinnedMessages: conversation.pinnedMessages,
+        pinnedMessages: updatedConversation.pinnedMessages,
         pinnedBy: userId,
       });
     }
 
     res.json({
       message: "Message pinned successfully",
-      pinnedMessages: conversation.pinnedMessages,
+      pinnedMessages: updatedConversation.pinnedMessages,
     });
   } catch (err) {
     console.error("pinMessage error:", err.message);
@@ -86,8 +98,7 @@ exports.pinMessage = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
-// DELETE /api/chat/conversations/:id/messages/:messageId/pin
-// Unpin a message
+// UNPIN MESSAGE
 // ---------------------------------------------------------------------------
 exports.unpinMessage = async (req, res) => {
   try {
@@ -95,7 +106,7 @@ exports.unpinMessage = async (req, res) => {
     const { id: conversationId, messageId } = req.params;
     const conversation = req.conversation;
 
-    // For groups, only admins can unpin
+    // Admin check for groups
     if (conversation.type === "group") {
       const isAdmin = conversation.admins.some(
         (adminId) => adminId.toString() === userId,
@@ -107,39 +118,32 @@ exports.unpinMessage = async (req, res) => {
       }
     }
 
-    // Remove from pinned messages
-    const initialLength = conversation.pinnedMessages.length;
-    conversation.pinnedMessages = conversation.pinnedMessages.filter(
-      (pm) => pm.messageId.toString() !== messageId,
+    // Atomic pull
+    const updatedConversation = await Conversation.findOneAndUpdate(
+      { _id: conversationId, "pinnedMessages.messageId": messageId },
+      { $pull: { pinnedMessages: { messageId } } },
+      { new: true },
     );
 
-    if (conversation.pinnedMessages.length === initialLength) {
+    if (!updatedConversation) {
       return res.status(404).json({ message: "Message was not pinned" });
     }
 
-    await conversation.save();
+    await updatedConversation.populate(PINNED_MESSAGE_POPULATE);
 
-    // Populate remaining pinned messages
-    await conversation.populate({
-      path: "pinnedMessages.messageId",
-      select: "text gifUrl sender createdAt",
-      populate: { path: "sender", select: "name avatar" },
-    });
-
-    // Socket broadcast
     const io = req.app.get("io");
     if (io) {
       io.to(`conv:${conversationId}`).emit("message:unpinned", {
         conversationId,
         messageId,
-        pinnedMessages: conversation.pinnedMessages,
+        pinnedMessages: updatedConversation.pinnedMessages,
         unpinnedBy: userId,
       });
     }
 
     res.json({
       message: "Message unpinned successfully",
-      pinnedMessages: conversation.pinnedMessages,
+      pinnedMessages: updatedConversation.pinnedMessages,
     });
   } catch (err) {
     console.error("unpinMessage error:", err.message);
@@ -148,19 +152,14 @@ exports.unpinMessage = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
-// GET /api/chat/conversations/:id/pins
-// Get all pinned messages for a conversation
+// GET PINNED MESSAGES
 // ---------------------------------------------------------------------------
 exports.getPinnedMessages = async (req, res) => {
   try {
     const { id: conversationId } = req.params;
     const conversation = req.conversation;
 
-    await conversation.populate({
-      path: "pinnedMessages.messageId",
-      select: "text gifUrl sender createdAt reactions",
-      populate: { path: "sender", select: "name avatar" },
-    });
+    await conversation.populate(PINNED_MESSAGE_POPULATE);
 
     res.json({
       conversationId,

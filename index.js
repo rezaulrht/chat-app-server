@@ -58,7 +58,6 @@ app.use("/api/chat", chatRoutes);
 app.use("/api/chat", groupRoutes);
 app.use("/api/reset", resetRoutes);
 app.use("/api/chat/conversations/:id", pinRoutes); // Pin routes nested under conversations
-app.use("/api/chat/conversations/:conversationId", pollRoutes); 
 app.use("/api/chat", pollRoutes); 
 
 // Workspace Routes

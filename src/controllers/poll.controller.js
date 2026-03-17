@@ -7,41 +7,58 @@ const Conversation = require("../models/Conversation");
 
 exports.createPoll = async (req, res) => {
   try {
-    console.log("📊 POST /polls - Request received");
-    console.log("Params:", req.params);
-    console.log("Body:", req.body);
-    console.log("User:", req.user?.id);
+    // ✅ FIX: removed sensitive console logs, minimal log only
+    console.log("POST /polls - request received");
+
     const userId = req.user.id;
     const { conversationId } = req.params;
     const { question, options, allowMultiple, expiresAt } = req.body;
-   
 
-    // ────────────────────────────────────────────────────────
     // Validation
-    // ────────────────────────────────────────────────────────
-
     if (!question?.trim()) {
       return res.status(400).json({ message: "Poll question is required" });
     }
 
-    if (!Array.isArray(options) || options.length < 2) {
+    // ✅ FIX: safe options validation (type + trim)
+    if (!Array.isArray(options)) {
+      return res.status(400).json({
+        message: "Options must be an array",
+      });
+    }
+
+    const cleanedOptions = [];
+
+    for (const opt of options) {
+      if (typeof opt !== "string") {
+        return res.status(400).json({
+          message: "Each option must be a string",
+        });
+      }
+
+      const trimmed = opt.trim();
+
+      if (!trimmed) {
+        return res.status(400).json({
+          message: "Options cannot be empty",
+        });
+      }
+
+      cleanedOptions.push(trimmed);
+    }
+
+    if (cleanedOptions.length < 2) {
       return res.status(400).json({
         message: "At least 2 options are required",
       });
-      
     }
 
-    if (options.length > 10) {
+    if (cleanedOptions.length > 10) {
       return res.status(400).json({
         message: "Maximum 10 options allowed",
       });
-      // ☝️ Too many options না হয় তার জন্য limit
     }
 
-    // ────────────────────────────────────────────────────────
-    // Check conversation exists and user is member
-    // ────────────────────────────────────────────────────────
-
+    // Check conversation
     const conversation = await Conversation.findById(conversationId);
 
     if (!conversation) {
@@ -58,22 +75,14 @@ exports.createPoll = async (req, res) => {
       });
     }
 
-    // ────────────────────────────────────────────────────────
-    // Format options with unique IDs
-    // ────────────────────────────────────────────────────────
-
-    const formattedOptions = options.map((opt, index) => ({
+    // Format options (use cleaned)
+    const formattedOptions = cleanedOptions.map((opt, index) => ({
       id: `opt${index + 1}`,
-      // ☝️ opt1, opt2, opt3... generate করছি
-      text: opt.trim(),
+      text: opt,
       votes: [],
-      // ☝️ Initially কোনো vote নেই
     }));
 
-    // ────────────────────────────────────────────────────────
-    // Parse expiry date (if provided)
-    // ────────────────────────────────────────────────────────
-
+    // Expiry
     let expiryDate = null;
     if (expiresAt) {
       expiryDate = new Date(expiresAt);
@@ -89,10 +98,6 @@ exports.createPoll = async (req, res) => {
       }
     }
 
-    // ────────────────────────────────────────────────────────
-    // Create poll message
-    // ────────────────────────────────────────────────────────
-
     const pollMessage = await Message.create({
       conversationId,
       sender: userId,
@@ -106,36 +111,39 @@ exports.createPoll = async (req, res) => {
       status: "sent",
     });
 
-    // Populate sender details
     await pollMessage.populate("sender", "name avatar");
-    // ☝️ Frontend এ sender এর name/avatar দেখানোর জন্য
 
-    // ────────────────────────────────────────────────────────
-    // Update conversation lastMessage
-    // ────────────────────────────────────────────────────────
-
+    // ✅ FIX: increment unreadCount for others
     await Conversation.findByIdAndUpdate(conversationId, {
       lastMessage: {
-        text: `📊 Poll: ${question.slice(0, 50)}${question.length > 50 ? "..." : ""}`,
-        // ☝️ Conversation list এ preview text
+        text: `📊 Poll: ${question.slice(0, 50)}${
+          question.length > 50 ? "..." : ""
+        }`,
         sender: userId,
         timestamp: pollMessage.createdAt,
       },
       updatedAt: pollMessage.createdAt,
     });
 
-    // ────────────────────────────────────────────────────────
-    // Socket broadcast to all participants
-    // ────────────────────────────────────────────────────────
+    // separate update for unread count
+    await Conversation.updateOne(
+      { _id: conversationId },
+      {
+        $inc: {
+          "participants.$[elem].unreadCount": 1,
+        },
+      },
+      {
+        arrayFilters: [{ elem: { $ne: userId } }],
+      },
+    );
 
     const io = req.app.get("io");
     if (io) {
       io.to(`conv:${conversationId}`).emit("message:new", pollMessage);
-      // ☝️ Group room এ সবাইকে পাঠাচ্ছি
     }
 
     res.status(201).json(pollMessage);
-    // ☝️ 201 = Created
   } catch (err) {
     console.error("createPoll error:", err.message);
     res.status(500).json({ message: "Server error" });
@@ -151,11 +159,6 @@ exports.votePoll = async (req, res) => {
     const userId = req.user.id;
     const { messageId } = req.params;
     const { optionId } = req.body;
-    // ☝️ Frontend থেকে পাচ্ছি: কোন option এ vote দিচ্ছে
-
-    // ────────────────────────────────────────────────────────
-    // Find poll message
-    // ────────────────────────────────────────────────────────
 
     const message = await Message.findById(messageId);
 
@@ -167,19 +170,16 @@ exports.votePoll = async (req, res) => {
       return res.status(400).json({ message: "This is not a poll message" });
     }
 
-    // ────────────────────────────────────────────────────────
-    // Check if poll expired
-    // ────────────────────────────────────────────────────────
-
     if (message.isPollExpired) {
       return res.status(400).json({ message: "This poll has expired" });
     }
 
-    // ────────────────────────────────────────────────────────
-    // Check if user is member
-    // ────────────────────────────────────────────────────────
-
     const conversation = await Conversation.findById(message.conversationId);
+
+    // ✅ FIX: null check before using participants
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
 
     const isMember = conversation.participants.some(
       (p) => p.toString() === userId,
@@ -191,60 +191,31 @@ exports.votePoll = async (req, res) => {
       });
     }
 
-    // ────────────────────────────────────────────────────────
-    // Find the option
-    // ────────────────────────────────────────────────────────
-
     const option = message.poll.options.find((opt) => opt.id === optionId);
 
     if (!option) {
       return res.status(404).json({ message: "Option not found" });
     }
 
-    // ────────────────────────────────────────────────────────
-    // Check if user already voted
-    // ────────────────────────────────────────────────────────
-
     const hasVotedThisOption = option.votes.some(
       (v) => v.toString() === userId,
     );
 
     if (hasVotedThisOption) {
-      // Already voted on this option → Remove vote (toggle)
       option.votes = option.votes.filter((v) => v.toString() !== userId);
-      // ☝️ User আবার same option এ click করলে vote remove হবে
     } else {
-      // New vote
-
       if (!message.poll.allowMultiple) {
-        // ────────────────────────────────────────────────────
-        // Single choice: Remove votes from other options
-        // ────────────────────────────────────────────────────
-
         message.poll.options.forEach((opt) => {
           opt.votes = opt.votes.filter((v) => v.toString() !== userId);
         });
-        // ☝️ Radio button logic: শুধু একটা option select থাকবে
       }
-
-      // Add vote to selected option
       option.votes.push(userId);
     }
 
-    // ────────────────────────────────────────────────────────
-    // Save changes
-    // ────────────────────────────────────────────────────────
-
     await message.save();
 
-    // Reload with populated data
     await message.populate("sender", "name avatar");
     await message.populate("poll.options.votes", "name avatar");
-    // ☝️ Voters এর details populate করছি
-
-    // ────────────────────────────────────────────────────────
-    // Socket broadcast updated poll
-    // ────────────────────────────────────────────────────────
 
     const io = req.app.get("io");
     if (io) {
@@ -252,7 +223,6 @@ exports.votePoll = async (req, res) => {
         messageId: message._id,
         poll: message.poll,
         results: message.getPollResults(),
-        // ☝️ Formatted results পাঠাচ্ছি
       });
     }
 
@@ -285,6 +255,23 @@ exports.getPollResults = async (req, res) => {
 
     if (!message.poll) {
       return res.status(400).json({ message: "This is not a poll message" });
+    }
+
+    // ✅ FIX: membership check before returning data
+    const conversation = await Conversation.findById(message.conversationId);
+
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    const isMember = conversation.participants.some(
+      (p) => p.toString() === req.user.id,
+    );
+
+    if (!isMember) {
+      return res.status(403).json({
+        message: "Forbidden: not a conversation member",
+      });
     }
 
     res.json({
