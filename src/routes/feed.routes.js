@@ -9,6 +9,8 @@ const {
   updatePost,
   deletePost,
   reactToPost,
+  votePoll,
+  toggleAcceptedAnswer,
 } = require("../controllers/feed.controller");
 
 router.use(auth);
@@ -30,5 +32,11 @@ router.delete("/:id", deletePost);
 
 // @route   POST /api/feed/posts/:id/react
 router.post("/:id/react", reactToPost);
+
+// @route   POST /api/feed/posts/:id/poll-vote
+router.post("/:id/poll-vote", votePoll);
+
+// @route   POST /api/feed/posts/:postId/accept/:commentId
+router.post("/:postId/accept/:commentId", toggleAcceptedAnswer);
 
 module.exports = router;
