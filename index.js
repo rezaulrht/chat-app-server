@@ -14,8 +14,7 @@ const { connectRedis, getIsRedisConnected } = require("./src/config/redis");
 const scheduleRoutes = require("./src/routes/schedule.routes");
 const workspaceRoutes = require("./src/routes/workspace.routes");
 const moduleRoutes = require("./src/routes/module.routes");
-const feedRoutes = require("./src/routes/feed.routes");
-const feedUserRoutes = require("./src/routes/feed.users.routes");
+const feedApiRoutes = require("./src/routes/feed.api.routes");
 const mongoose = require("mongoose");
 
 const port = process.env.PORT || 3000;
@@ -59,8 +58,7 @@ app.use("/api/workspaces", workspaceRoutes);
 app.use("/api/workspaces/:workspaceId/modules", moduleRoutes);
 
 // Feed Routes
-app.use("/api/feed/posts", feedRoutes);
-app.use("/api/feed/users", feedUserRoutes);
+app.use("/api/feed", feedApiRoutes);
 
 // Scheduled Message Routes
 app.use("/api/messages", scheduleRoutes);

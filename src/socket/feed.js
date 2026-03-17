@@ -8,6 +8,27 @@ const mongoose = require("mongoose");
 const Post = require("../models/Post");
 
 module.exports = function registerFeedHandlers(socket) {
+  socket.on("feed:user:join", (targetUserId) => {
+    if (
+      typeof targetUserId !== "string" ||
+      !mongoose.Types.ObjectId.isValid(targetUserId)
+    ) {
+      socket.emit("feed:error", { message: "Invalid user id" });
+      return;
+    }
+
+    socket.join(`feed:user:${targetUserId}`);
+  });
+
+  socket.on("feed:user:leave", (targetUserId) => {
+    if (
+      typeof targetUserId === "string" &&
+      mongoose.Types.ObjectId.isValid(targetUserId)
+    ) {
+      socket.leave(`feed:user:${targetUserId}`);
+    }
+  });
+
   socket.on("feed:post:join", async (postId) => {
     if (typeof postId !== "string" || !mongoose.Types.ObjectId.isValid(postId)) {
       socket.emit("feed:error", { message: "Invalid post id" });

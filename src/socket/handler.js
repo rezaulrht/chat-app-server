@@ -39,6 +39,7 @@ const socketHandler = (io) => {
 
   io.on("connection", async (socket) => {
     console.log(`✅ User connected: ${socket.id} (userId: ${socket.userId})`);
+    socket.join(`feed:user:${socket.userId}`);
 
     // Register presence handlers and start the heartbeat interval
     const { refreshPresence, cleanup: cleanupPresence } =
