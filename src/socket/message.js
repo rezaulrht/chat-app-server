@@ -82,9 +82,11 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
 
         // ── Update lastMessage + unreadCount ────────────────────────
         const lastMessageUpdate = {
-          text: gifUrl ? "GIF" : text.trim(),
+          text: gifUrl ? "GIF" : (text?.trim() || ""),
           sender: socket.userId,
           timestamp: message.createdAt,
+          gifUrl: gifUrl || null,
+          attachments: attachments?.length > 0 ? attachments : [],
         };
 
         if (isGroup) {

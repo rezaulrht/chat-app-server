@@ -64,6 +64,14 @@ const conversationSchema = new mongoose.Schema(
         type: Date,
         default: null,
       },
+      gifUrl: {
+        type: String,
+        default: null,
+      },
+      attachments: {
+        type: Array,
+        default: [],
+      },
     },
 
     // Unread message count per participant
