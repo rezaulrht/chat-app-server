@@ -153,13 +153,16 @@ exports.discoverWorkspaces = async (req, res) => {
     const filter = { visibility: "public" };
 
     if (query?.trim()) {
-      filter.name = { $regex: query.trim(), $options: "i" };
+      const escapedQuery = query.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.name = { $regex: escapedQuery, $options: "i" };
     }
+
+    const safeLimit = Math.max(1, Math.min(parseInt(limit, 10) || 20, 100));
 
     const workspaces = await Workspace.find(filter)
       .select("name description avatar banner createdBy members createdAt")
       .populate("createdBy", "name avatar")
-      .limit(parseInt(limit))
+      .limit(safeLimit)
       .sort({ createdAt: -1 });
 
     const result = workspaces.map((ws) => ({
@@ -1020,7 +1023,14 @@ exports.updateRole = async (req, res) => {
     const updateFields = {};
     if (name !== undefined) {
       if (!name.trim()) return res.status(400).json({ message: "Role name cannot be blank" });
-      updateFields["roles.$[r].name"] = name.trim();
+      const trimmedName = name.trim();
+      const duplicate = workspace.roles?.some(
+        (r) => r._id.toString() !== roleId && r.name.toLowerCase() === trimmedName.toLowerCase()
+      );
+      if (duplicate) {
+        return res.status(400).json({ message: `Role "${trimmedName}" already exists` });
+      }
+      updateFields["roles.$[r].name"] = trimmedName;
     }
     if (color !== undefined) updateFields["roles.$[r].color"] = color;
     if (permissions !== undefined) updateFields["roles.$[r].permissions"] = permissions;

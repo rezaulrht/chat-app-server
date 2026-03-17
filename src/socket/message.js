@@ -57,15 +57,15 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
 
         // ── Handle Thread Metadata Update ────────────────────────────
         if (replyTo) {
-          await Message.findByIdAndUpdate(replyTo, {
+          const updatedReplyTo = await Message.findByIdAndUpdate(replyTo, {
             $inc: { replyCount: 1 },
             $set: { lastReplyAt: message.createdAt },
-          });
+          }, { new: true });
           
           // Emit thread update to the room
           io.to(`conv:${conversationId}`).emit("message:thread:update", {
             messageId: replyTo,
-            replyCount: 1, // This is just an increment, client should handle or we fetch
+            replyCount: updatedReplyTo.replyCount,
             lastReplyAt: message.createdAt,
           });
         }

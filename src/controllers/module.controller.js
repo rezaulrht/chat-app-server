@@ -174,7 +174,9 @@ exports.listModules = async (req, res) => {
       .filter((m) => {
         if (!m.isPrivate) return true;
         if (isAdmin) return true;
-        return m.allowedMembers.some((uid) => uid.toString() === req.user.id);
+        const directlyAllowed = m.allowedMembers.some((uid) => uid.toString() === req.user.id);
+        const roleAllowed = m.allowedRoles?.some((roleId) => memberRecord.roleIds?.map(String).includes(roleId.toString()));
+        return directlyAllowed || roleAllowed;
       })
       .map((m) => {
         const obj = m.toObject();
@@ -224,7 +226,10 @@ exports.getModule = async (req, res) => {
       const allowed = module.allowedMembers.some(
         (uid) => uid.toString() === req.user.id,
       );
-      if (!allowed) {
+      const roleAllowed = module.allowedRoles?.some(
+        (roleId) => memberRecord.roleIds?.map(String).includes(roleId.toString())
+      );
+      if (!allowed && !roleAllowed) {
         return res
           .status(403)
           .json({ message: "Access denied to this module" });
