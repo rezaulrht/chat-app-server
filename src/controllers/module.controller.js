@@ -549,6 +549,10 @@ exports.getModuleMessages = async (req, res) => {
           path: "sender",
           select: "name avatar",
         },
+      })
+      .populate({
+        path: "readBy.user",
+        select: "name avatar",
       });
 
     // ── 7. Return oldest-first ───────────────────────────────────

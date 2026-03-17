@@ -3,6 +3,9 @@
 const ScheduledMessage = require("../models/ScheduledMessage");
 const Message = require("../models/Message");
 const Conversation = require("../models/Conversation");
+const Module = require("../models/Module");
+const ModuleMessage = require("../models/ModuleMessage");
+const Workspace = require("../models/Workspace");
 const { redisClient, getIsRedisConnected } = require("../config/redis");
 const createHelpers = require("../socket/helpers");
 
@@ -65,72 +68,127 @@ function startScheduler(io) {
             continue;
           }
 
-          // Load conversation to decide DM vs Group and participants
-          const conversation = await Conversation.findById(
-            scheduled.conversationId,
-          );
-
-          if (!conversation) {
-            scheduled.status = "failed";
-            scheduled.lastError = "Conversation not found";
-            scheduled.attempts = (scheduled.attempts || 0) + 1;
-            await scheduled.save();
-            await redisClient.zRem("sched:messages", jobId);
-            continue;
-          }
-
-          const isGroup = conversation.type === "group";
-          const participants = (conversation.participants || []).map((p) =>
-            p.toString(),
-          );
-
-          // Mark sending
-          scheduled.status = "sending";
-          await scheduled.save();
-
-          // Find receiver for DM
-          let receiverId = null;
-          if (!isGroup) {
-            receiverId =
-              participants.find((p) => p !== scheduled.senderId.toString()) ||
-              null;
-          }
-
-          // Create Message using your schema fields
-          const message = await Message.create({
-            conversationId: scheduled.conversationId,
-            sender: scheduled.senderId,
-            receiverId,
-            text: scheduled.content,
-            status: "sent",
-            scheduledFromId: scheduled._id,
-          });
-
-          // ✅ (4) Update conversation.lastMessage so conversation list stays fresh
-          await Conversation.findByIdAndUpdate(scheduled.conversationId, {
-            lastMessage: {
-              text: message.text,
-              sender: message.sender,
-              timestamp: message.createdAt,
-            },
-            updatedAt: message.createdAt,
-          });
-
-          const payload = buildMessagePayload(message);
-
-          // Emit to users using your Redis socket mapping
-          if (isGroup) {
-            for (const uid of participants) {
-              await emitToUser(uid, "message:new", payload);
+// Branch logic: ModuleMessage vs Message
+          if (scheduled.moduleId) {
+            const moduleDoc = await Module.findById(scheduled.moduleId);
+            if (!moduleDoc) {
+              scheduled.status = "failed";
+              scheduled.lastError = "Module not found";
+              scheduled.attempts = (scheduled.attempts || 0) + 1;
+              await scheduled.save();
+              await redisClient.zRem("sched:messages", jobId);
+              continue;
             }
-          } else {
-            await emitToUser(
-              scheduled.senderId.toString(),
-              "message:new",
-              payload,
+
+            // Mark sending
+            scheduled.status = "sending";
+            await scheduled.save();
+
+            // Create ModuleMessage
+            const message = await ModuleMessage.create({
+              moduleId: scheduled.moduleId,
+              workspaceId: scheduled.workspaceId,
+              sender: scheduled.senderId,
+              text: scheduled.content,
+              scheduledFromId: scheduled._id,
+            });
+
+            // Populate
+            const populated = await ModuleMessage.findById(message._id).populate("sender", "name avatar");
+
+            // Update module lastMessage & unreadCount
+            const inc = {};
+            if (scheduled.workspaceId) {
+              const freshWorkspace = await Workspace.findById(scheduled.workspaceId).select("members");
+              if (freshWorkspace) {
+                for (const m of freshWorkspace.members) {
+                  if (m.user.toString() !== scheduled.senderId.toString()) {
+                    inc[`unreadCount.${m.user}`] = 1;
+                  }
+                }
+              }
+            }
+
+            await Module.findByIdAndUpdate(scheduled.moduleId, {
+              lastMessage: {
+                text: message.text,
+                sender: message.sender,
+                timestamp: message.createdAt,
+              },
+              $inc: Object.keys(inc).length > 0 ? inc : undefined,
+            });
+
+            // Emit
+            io.to(`module:${scheduled.moduleId}`).emit("module:message:new", populated);
+            
+          } else if (scheduled.conversationId) {
+            // Load conversation to decide DM vs Group and participants
+            const conversation = await Conversation.findById(
+              scheduled.conversationId,
             );
-            if (receiverId) {
-              await emitToUser(receiverId.toString(), "message:new", payload);
+
+            if (!conversation) {
+              scheduled.status = "failed";
+              scheduled.lastError = "Conversation not found";
+              scheduled.attempts = (scheduled.attempts || 0) + 1;
+              await scheduled.save();
+              await redisClient.zRem("sched:messages", jobId);
+              continue;
+            }
+
+            const isGroup = conversation.type === "group";
+            const participants = (conversation.participants || []).map((p) =>
+              p.toString(),
+            );
+
+            // Mark sending
+            scheduled.status = "sending";
+            await scheduled.save();
+
+            // Find receiver for DM
+            let receiverId = null;
+            if (!isGroup) {
+              receiverId =
+                participants.find((p) => p !== scheduled.senderId.toString()) ||
+                null;
+            }
+
+            // Create Message using your schema fields
+            const message = await Message.create({
+              conversationId: scheduled.conversationId,
+              sender: scheduled.senderId,
+              receiverId,
+              text: scheduled.content,
+              status: "sent",
+              scheduledFromId: scheduled._id,
+            });
+
+            // Update conversation.lastMessage so conversation list stays fresh
+            await Conversation.findByIdAndUpdate(scheduled.conversationId, {
+              lastMessage: {
+                text: message.text,
+                sender: message.sender,
+                timestamp: message.createdAt,
+              },
+              updatedAt: message.createdAt,
+            });
+
+            const payload = buildMessagePayload(message);
+
+            // Emit to users using your Redis socket mapping
+            if (isGroup) {
+              for (const uid of participants) {
+                await emitToUser(uid, "message:new", payload);
+              }
+            } else {
+              await emitToUser(
+                scheduled.senderId.toString(),
+                "message:new",
+                payload,
+              );
+              if (receiverId) {
+                await emitToUser(receiverId.toString(), "message:new", payload);
+              }
             }
           }
 

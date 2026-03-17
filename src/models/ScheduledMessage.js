@@ -5,7 +5,14 @@ const scheduledMessageSchema = new mongoose.Schema(
     conversationId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Conversation",
-      required: true,
+    },
+    moduleId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Module",
+    },
+    workspaceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Workspace",
     },
     senderId: {
       type: mongoose.Schema.Types.ObjectId,

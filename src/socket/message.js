@@ -16,9 +16,9 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
   // ----------------------------------------------------------------
   socket.on(
     "message:send",
-    async ({ conversationId, receiverId, text, gifUrl, tempId, replyTo }) => {
+    async ({ conversationId, receiverId, text, gifUrl, tempId, replyTo, attachments }) => {
       if (!conversationId) return;
-      if (!text?.trim() && !gifUrl) return;
+      if (!text?.trim() && !gifUrl && (!attachments || attachments.length === 0)) return;
 
       try {
         // Fetch conversation to determine type and validate membership
@@ -48,11 +48,27 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
           receiverId: isGroup ? null : receiverId,
           status: "sent",
           replyTo: replyTo || null,
+          attachments: attachments || [],
         };
         if (text?.trim()) messageData.text = text.trim();
         if (gifUrl) messageData.gifUrl = gifUrl;
 
         const message = await Message.create(messageData);
+
+        // ── Handle Thread Metadata Update ────────────────────────────
+        if (replyTo) {
+          await Message.findByIdAndUpdate(replyTo, {
+            $inc: { replyCount: 1 },
+            $set: { lastReplyAt: message.createdAt },
+          });
+          
+          // Emit thread update to the room
+          io.to(`conv:${conversationId}`).emit("message:thread:update", {
+            messageId: replyTo,
+            replyCount: 1, // This is just an increment, client should handle or we fetch
+            lastReplyAt: message.createdAt,
+          });
+        }
 
         // ── Populate replyTo + sender for the payload ───────────────
         if (message.replyTo) {
@@ -107,6 +123,7 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
           receiverId: isGroup ? null : receiverId,
           text: message.text,
           gifUrl: message.gifUrl,
+          attachments: message.attachments,
           replyTo: message.replyTo || null,
           status: message.status,
           createdAt: message.createdAt,

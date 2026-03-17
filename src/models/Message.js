@@ -56,6 +56,26 @@ const messageSchema = new mongoose.Schema(
       ref: "Message",
       default: null,
     },
+    //  NEW: Thread Metadata
+    replyCount: {
+      type: Number,
+      default: 0,
+    },
+    lastReplyAt: {
+      type: Date,
+      default: null,
+    },
+    //  NEW: Attachments
+    attachments: [
+      {
+        url: { type: String, required: true },
+        publicId: { type: String }, // For Cloudinary/S3 deletion
+        resourceType: { type: String }, // image, video, raw, audio
+        format: { type: String },
+        name: { type: String },
+        size: { type: Number },
+      },
+    ],
     // Scheduled Messages
     scheduledFromId: {
       type: mongoose.Schema.Types.ObjectId,

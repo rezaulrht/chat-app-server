@@ -80,8 +80,8 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
 
   socket.on(
     "module:message:send",
-    async ({ moduleId, workspaceId, text, gifUrl, tempId, replyTo }) => {
-      if (!moduleId || (!text?.trim() && !gifUrl)) return;
+    async ({ moduleId, workspaceId, text, gifUrl, tempId, replyTo, attachments }) => {
+      if (!moduleId || (!text?.trim() && !gifUrl && (!attachments || attachments.length === 0))) return;
 
       try {
         // Verify module + membership
@@ -143,7 +143,23 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
           text: text?.trim() || null,
           gifUrl: gifUrl || null,
           replyTo: replyTo || null,
+          attachments: attachments || [],
         });
+
+        // ── Handle Thread Metadata Update ────────────────────────────
+        if (replyTo) {
+          await ModuleMessage.findByIdAndUpdate(replyTo, {
+            $inc: { replyCount: 1 },
+            $set: { lastReplyAt: message.createdAt },
+          });
+          
+          // Emit thread update to the room
+          io.to(`module:${moduleId}`).emit("module:message:thread:update", {
+            messageId: replyTo,
+            replyCount: 1,
+            lastReplyAt: message.createdAt,
+          });
+        }
 
         // Populate sender + replyTo
         await message.populate("sender", "name avatar");
@@ -179,6 +195,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
           sender: message.sender,
           text: message.text,
           gifUrl: message.gifUrl,
+          attachments: message.attachments,
           replyTo: message.replyTo || null,
           reactions: {},
           isEdited: false,
@@ -380,6 +397,52 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
       socket.emit("module:message:deletedForMe", { messageId, moduleId });
     } catch (err) {
       console.error("module:message:deleteForMe error:", err.message);
+    }
+  });
+
+  // ================================================================
+  // module:message:pin
+  // ================================================================
+
+  socket.on("module:message:pin", async ({ messageId, moduleId }) => {
+    if (!messageId || !moduleId) return;
+    try {
+      const message = await ModuleMessage.findOne({ _id: messageId, moduleId });
+      if (!message) return;
+
+      // Permission check: Only admins/owners or members with MANAGE_MESSAGES permission can pin
+      const workspace = await Workspace.findOne({
+        _id: message.workspaceId,
+        "members.user": socket.userId,
+      }).select("members roles");
+      if (!workspace) return;
+
+      const memberRecord = workspace.members.find(
+        (m) => m.user.toString() === socket.userId,
+      );
+      if (!memberRecord) return;
+
+      const isAdmin = memberRecord.role === "owner" || memberRecord.role === "admin";
+      // TODO: Add permission bitmask check here once roles are fully implemented
+      if (!isAdmin) {
+        return socket.emit("message:error", { message: "Permission denied to pin messages" });
+      }
+
+      const newPinStatus = !message.isPinned;
+      message.isPinned = newPinStatus;
+      message.pinnedBy = newPinStatus ? socket.userId : null;
+      message.pinnedAt = newPinStatus ? new Date() : null;
+      await message.save();
+
+      io.to(`module:${moduleId}`).emit("module:message:pinned", {
+        messageId: message._id,
+        moduleId,
+        isPinned: newPinStatus,
+        pinnedBy: message.pinnedBy,
+        pinnedAt: message.pinnedAt,
+      });
+    } catch (err) {
+      console.error("module:message:pin error:", err.message);
     }
   });
 
