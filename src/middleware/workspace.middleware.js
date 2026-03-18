@@ -68,16 +68,40 @@ exports.isWorkspaceMember = (req, res, next) => {
 
 // ---------------------------------------------------------------------------
 // isWorkspaceAdmin
-// Ensures the authenticated user is an admin or owner of the workspace.
-// Requires isWorkspaceMember to have run first (reads req.memberRecord.role).
+// Ensures the authenticated user has ADMINISTRATOR or MANAGE_WORKSPACE permission.
+// Requires isWorkspaceMember to have run first (reads req.memberRecord).
 // ---------------------------------------------------------------------------
 exports.isWorkspaceAdmin = (req, res, next) => {
-  const { role } = req.memberRecord;
-  if (role !== "admin" && role !== "owner") {
+  const { role, roleIds } = req.memberRecord;
+  const { PERMISSIONS } = Workspace;
+
+  if (role === "owner" || role === "admin") {
+    return next();
+  }
+
+  // Check custom roles for ADMINISTRATOR or MANAGE_WORKSPACE
+  let hasAdminPerms = false;
+  if (roleIds && roleIds.length > 0 && req.workspace.roles) {
+    const roleIdsStr = roleIds.map(String);
+    const userRoles = req.workspace.roles.filter((r) => roleIdsStr.includes(r._id.toString()));
+    
+    for (const r of userRoles) {
+      if (
+        r.permissions?.includes(PERMISSIONS.ADMINISTRATOR) || 
+        r.permissions?.includes(PERMISSIONS.MANAGE_WORKSPACE)
+      ) {
+        hasAdminPerms = true;
+        break;
+      }
+    }
+  }
+
+  if (!hasAdminPerms) {
     return res
       .status(403)
       .json({ message: "Only workspace admins can perform this action" });
   }
+
   next();
 };
 

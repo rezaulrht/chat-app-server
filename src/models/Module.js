@@ -50,18 +50,20 @@ const moduleSchema = new mongoose.Schema(
       default: false,
     },
 
-    // Only relevant when isPrivate === true
-    allowedMembers: [
+    // NEW: Role-based / Member-based access for private channels (Discord style overrides)
+    permissionOverrides: [
       {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "User",
-      },
-    ],
-
-    // NEW: Role-based access for private channels
-    allowedRoles: [
-      {
-        type: mongoose.Schema.Types.ObjectId, // Refs to workspace.roles (it's embedded but we can store ID)
+        targetId: {
+          type: mongoose.Schema.Types.ObjectId, // Can be a User ID or a Role ID
+          required: true,
+        },
+        targetType: {
+          type: String,
+          enum: ["member", "role"],
+          required: true,
+        },
+        allow: [{ type: String }], // Array of PERMISSION strings
+        deny: [{ type: String }],  // Array of PERMISSION strings
       },
     ],
 

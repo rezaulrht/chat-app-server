@@ -2,6 +2,19 @@ const mongoose = require("mongoose");
 
 const MAX_WORKSPACE_MEMBERS = 500;
 
+// ── Permission Constants ─────────────────────────────────────────
+const PERMISSIONS = {
+  ADMINISTRATOR: "ADMINISTRATOR",
+  MANAGE_WORKSPACE: "MANAGE_WORKSPACE",
+  MANAGE_ROLES: "MANAGE_ROLES",
+  MANAGE_CHANNELS: "MANAGE_CHANNELS",
+  KICK_MEMBERS: "KICK_MEMBERS",
+  CREATE_INVITES: "CREATE_INVITES",
+  MANAGE_MESSAGES: "MANAGE_MESSAGES",
+  SEND_MESSAGES: "SEND_MESSAGES",
+  VIEW_CHANNEL: "VIEW_CHANNEL",
+};
+
 // ── Sub-schemas ──────────────────────────────────────────────────
 
 // Categories are embedded subdocuments — no separate model needed
@@ -14,7 +27,7 @@ const categorySchema = new mongoose.Schema({
 const roleSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   color: { type: String, default: "#99AAB5" }, // Discord-ish default gray
-  permissions: [{ type: String }], // Array of permission strings
+  permissions: [{ type: String, enum: Object.values(PERMISSIONS) }], // Array of permission strings
   position: { type: Number, default: 0 }, // Higher = more priority
   isHoisted: { type: Boolean, default: false }, // Display separately in member list
 });
@@ -128,3 +141,4 @@ workspaceSchema.index(
 
 module.exports = mongoose.model("Workspace", workspaceSchema);
 module.exports.MAX_WORKSPACE_MEMBERS = MAX_WORKSPACE_MEMBERS;
+module.exports.PERMISSIONS = PERMISSIONS;

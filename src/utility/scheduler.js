@@ -87,7 +87,7 @@ function startScheduler(io) {
             // Create ModuleMessage
             const message = await ModuleMessage.create({
               moduleId: scheduled.moduleId,
-              workspaceId: scheduled.workspaceId,
+              workspaceId: moduleDoc.workspaceId,
               sender: scheduled.senderId,
               text: scheduled.content,
               scheduledFromId: scheduled._id,
@@ -98,8 +98,8 @@ function startScheduler(io) {
 
             // Update module lastMessage & unreadCount
             const inc = {};
-            if (scheduled.workspaceId) {
-              const freshWorkspace = await Workspace.findById(scheduled.workspaceId).select("members");
+            if (moduleDoc.workspaceId) {
+              const freshWorkspace = await Workspace.findById(moduleDoc.workspaceId).select("members");
               if (freshWorkspace) {
                 for (const m of freshWorkspace.members) {
                   if (m.user.toString() !== scheduled.senderId.toString()) {
