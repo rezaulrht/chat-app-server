@@ -18,6 +18,21 @@
 const Workspace = require("../models/Workspace");
 const Module = require("../models/Module");
 const ModuleMessage = require("../models/ModuleMessage");
+const { DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const r2Client = require("../config/r2");
+
+async function deleteR2Attachments(attachments) {
+  if (!attachments?.length) return;
+  await Promise.allSettled(
+    attachments.map((att) => {
+      const key = att.publicId;
+      if (!key) return Promise.resolve();
+      return r2Client.send(
+        new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key })
+      );
+    })
+  );
+}
 const mongoose = require("mongoose");
 
 // Reuse same constants as typing.js
@@ -359,9 +374,11 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         if (!isAdmin) return;
       }
 
+      await deleteR2Attachments(message.attachments);
       message.isDeleted = true;
       message.text = null;
       message.gifUrl = null;
+      message.attachments = [];
       await message.save();
 
       io.to(`module:${moduleId}`).emit("module:message:deleted", {

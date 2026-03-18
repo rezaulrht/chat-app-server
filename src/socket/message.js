@@ -6,6 +6,21 @@
 
 const Message = require("../models/Message");
 const Conversation = require("../models/Conversation");
+const { DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const r2Client = require("../config/r2");
+
+async function deleteR2Attachments(attachments) {
+  if (!attachments?.length) return;
+  await Promise.allSettled(
+    attachments.map((att) => {
+      const key = att.publicId || att.url?.split("/").pop();
+      if (!key) return Promise.resolve();
+      return r2Client.send(
+        new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key })
+      );
+    })
+  );
+}
 
 const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
   // ----------------------------------------------------------------
@@ -341,8 +356,10 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
       // Only sender can delete for everyone
       if (message.sender.toString() !== socket.userId) return;
 
+      await deleteR2Attachments(message.attachments);
       message.isDeleted = true;
       message.text = "This message was deleted"; // optional fallback text
+      message.attachments = [];
       await message.save();
 
       const payload = {
