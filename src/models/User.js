@@ -65,6 +65,7 @@ const userSchema = new mongoose.Schema(
     // ── Feed / Social fields ─────────────────────────────────────────
     reputation: {
       type: Number,
+      min: 0,
       default: 0,
     },
 
@@ -86,6 +87,8 @@ const userSchema = new mongoose.Schema(
       {
         type: String,
         trim: true,
+        lowercase: true,
+        maxlength: 40,
       },
     ],
   },
@@ -94,5 +97,7 @@ const userSchema = new mongoose.Schema(
 
 // ── Indexes ──────────────────────────────────────────────────────────────────
 userSchema.index({ reputation: -1 }); // leaderboard sort
+userSchema.index({ followedTags: 1 });
+userSchema.index({ followers: 1 });
 
 module.exports = mongoose.model("User", userSchema);

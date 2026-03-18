@@ -139,6 +139,7 @@ exports.getConversations = async (req, res) => {
           _id: conv._id,
           type: "group",
           name: conv.name,
+          description: conv.description, // ← ADD THIS LINE
           avatar: conv.avatar,
           createdBy: conv.createdBy,
           admins: conv.admins,

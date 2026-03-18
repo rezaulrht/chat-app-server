@@ -14,7 +14,10 @@ const { connectRedis, getIsRedisConnected } = require("./src/config/redis");
 const scheduleRoutes = require("./src/routes/schedule.routes");
 const workspaceRoutes = require("./src/routes/workspace.routes");
 const moduleRoutes = require("./src/routes/module.routes");
+const feedApiRoutes = require("./src/routes/feed.api.routes");
 const feedRoutes = require("./src/routes/feed.routes");
+const pinRoutes = require("./src/routes/pin.routes");
+const pollRoutes = require("./src/routes/poll.routes");
 const feedUserRoutes = require("./src/routes/feed.users.routes");
 const uploadRoutes = require("./src/routes/upload.routes");
 const mongoose = require("mongoose");
@@ -46,22 +49,24 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
 // Routes
+app.use("/api/upload", uploadRoutes); // ← Upload routes
 app.use("/auth", authRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/chat", groupRoutes);
 app.use("/api/reset", resetRoutes);
-app.use("/api/reset", require("./src/routes/reset.routes"));
+app.use("/api/chat/conversations/:id", pinRoutes); // Pin routes nested under conversations
+app.use("/api/chat", pollRoutes); 
 
 // Workspace Routes
 app.use("/api/workspaces", workspaceRoutes);
 app.use("/api/workspaces/:workspaceId/modules", moduleRoutes);
 
 // Feed Routes
-app.use("/api/feed/posts", feedRoutes);
-app.use("/api/feed/users", feedUserRoutes);
+app.use("/api/feed", feedApiRoutes);
 
 // Scheduled Message Routes
 app.use("/api/messages", scheduleRoutes);

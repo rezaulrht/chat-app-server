@@ -30,6 +30,10 @@ const socketHandler = (io) => {
 
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      // Validate that JWT contains id claim and it's a valid identifier
+      if (!decoded.id || typeof decoded.id !== "string" || decoded.id.trim() === "") {
+        return next(new Error("Authentication error: Invalid token claims"));
+      }
       socket.userId = decoded.id;
       next();
     } catch (err) {
@@ -38,7 +42,14 @@ const socketHandler = (io) => {
   });
 
   io.on("connection", async (socket) => {
+    // Validate socket.userId before using it
+    if (!socket.userId || typeof socket.userId !== "string") {
+      socket.disconnect(true);
+      return;
+    }
+
     console.log(`✅ User connected: ${socket.id} (userId: ${socket.userId})`);
+    socket.join(`feed:user:${socket.userId}`);
 
     // Register presence handlers and start the heartbeat interval
     const { refreshPresence, cleanup: cleanupPresence } =
