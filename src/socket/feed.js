@@ -8,6 +8,31 @@ const mongoose = require("mongoose");
 const Post = require("../models/Post");
 
 module.exports = function registerFeedHandlers(socket) {
+  socket.on("feed:user:join", (targetUserId) => {
+    // Only allow joining own user room
+    if (
+      typeof targetUserId !== "string" ||
+      !mongoose.Types.ObjectId.isValid(targetUserId) ||
+      targetUserId !== socket.userId
+    ) {
+      socket.emit("feed:error", { message: "Not authorized to join this room" });
+      return;
+    }
+
+    socket.join(`feed:user:${targetUserId}`);
+  });
+
+  socket.on("feed:user:leave", (targetUserId) => {
+    // Only allow leaving own user room
+    if (
+      typeof targetUserId === "string" &&
+      mongoose.Types.ObjectId.isValid(targetUserId) &&
+      targetUserId === socket.userId
+    ) {
+      socket.leave(`feed:user:${targetUserId}`);
+    }
+  });
+
   socket.on("feed:post:join", async (postId) => {
     if (typeof postId !== "string" || !mongoose.Types.ObjectId.isValid(postId)) {
       socket.emit("feed:error", { message: "Invalid post id" });

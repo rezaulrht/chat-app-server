@@ -9,17 +9,18 @@ const authRoutes = require("./src/routes/auth.routes");
 const chatRoutes = require("./src/routes/chat.routes");
 const groupRoutes = require("./src/routes/group.routes");
 const resetRoutes = require("./src/routes/reset.routes");
-const uploadRoutes = require("./src/routes/upload.routes"); // ← ADD THIS
 const passport = require("./src/config/passport");
 const { connectRedis, getIsRedisConnected } = require("./src/config/redis");
 const scheduleRoutes = require("./src/routes/schedule.routes");
 const workspaceRoutes = require("./src/routes/workspace.routes");
 const moduleRoutes = require("./src/routes/module.routes");
+const feedApiRoutes = require("./src/routes/feed.api.routes");
 const feedRoutes = require("./src/routes/feed.routes");
 const pinRoutes = require("./src/routes/pin.routes");
 const pollRoutes = require("./src/routes/poll.routes");
 const readReceiptRoutes = require("./src/routes/readReceipt.routes");
 const feedUserRoutes = require("./src/routes/feed.users.routes");
+const uploadRoutes = require("./src/routes/upload.routes");
 const mongoose = require("mongoose");
 
 const port = process.env.PORT || 3000;
@@ -67,11 +68,13 @@ app.use("/api/workspaces", workspaceRoutes);
 app.use("/api/workspaces/:workspaceId/modules", moduleRoutes);
 
 // Feed Routes
-app.use("/api/feed/posts", feedRoutes);
-app.use("/api/feed/users", feedUserRoutes);
+app.use("/api/feed", feedApiRoutes);
 
 // Scheduled Message Routes
 app.use("/api/messages", scheduleRoutes);
+
+// Upload (R2 presign)
+app.use("/api/upload", uploadRoutes);
 
 // Health check for Deployment (UptimeRobot/Heartbeat)
 app.get("/health", (req, res) => {

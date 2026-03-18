@@ -93,8 +93,11 @@ exports.listScheduledMessages = async (req, res) => {
       senderId: userId, // only yours
       status: { $in: ["scheduled", "sending"] },
     };
-    if (conversationId) query.conversationId = conversationId;
-    if (moduleId) query.moduleId = moduleId;
+    if (conversationId) {
+      query.conversationId = conversationId;
+    } else if (moduleId) {
+      query.moduleId = moduleId;
+    }
 
     const rows = await ScheduledMessage.find(query).sort({ sendAt: 1 });
 

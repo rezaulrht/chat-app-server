@@ -1,6 +1,14 @@
 const mongoose = require("mongoose");
 const Post = require("../models/Post");
+const Comment = require("../models/Comment");
 const User = require("../models/User");
+
+const FEED_REPUTATION = {
+  POST_REACTION: 2,
+  COMMENT_REACTION: 1,
+  ACCEPTED_ANSWER: 15,
+  QUESTION_BONUS: 5,
+};
 
 const VALID_TYPES = [
   "post",
@@ -14,8 +22,8 @@ const VALID_TYPES = [
 
 const SORT_PRESETS = {
   latest: { isPinned: -1, createdAt: -1 },
-  trending: { commentsCount: -1, createdAt: -1 },
-  top: { commentsCount: -1, createdAt: -1 },
+  trending: { isPinned: -1, reactionCount: -1, commentsCount: -1, createdAt: -1 },
+  top: { reactionCount: -1, commentsCount: -1, createdAt: -1 },
   oldest: { createdAt: 1 },
 };
 
@@ -34,10 +42,39 @@ function getLevel(reputation) {
 
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
+const getIo = (req) => req.app.get("io");
+
+const toPlainReactions = (reactionMap) => {
+  const reactionsObj = {};
+  for (const [key, val] of reactionMap.entries()) {
+    reactionsObj[key] = val;
+  }
+  return reactionsObj;
+};
+
 const clampInt = (value, fallback, min, max) => {
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
+};
+
+// Helper to check post access (privacy and ownership)
+const checkPostAccess = async (postId, userId) => {
+  if (!mongoose.Types.ObjectId.isValid(postId)) {
+    return { error: { status: 400, message: "Invalid post ID" } };
+  }
+
+  const post = await Post.findById(postId).select("_id author isPrivate");
+  if (!post) {
+    return { error: { status: 404, message: "Post not found" } };
+  }
+
+  const isOwner = post.author?.toString?.() === userId;
+  if (post.isPrivate && !isOwner) {
+    return { error: { status: 403, message: "Not authorized to access this post" } };
+  }
+
+  return { post };
 };
 
 const normalizeTags = (tags) => {
@@ -46,8 +83,8 @@ const normalizeTags = (tags) => {
   const source = Array.isArray(tags)
     ? tags
     : String(tags)
-        .split(",")
-        .map((tag) => tag.trim());
+      .split(",")
+      .map((tag) => tag.trim());
 
   const deduped = [];
   const seen = new Set();
@@ -86,18 +123,26 @@ const normalizeScreenshots = (screenshots) => {
     .slice(0, 10);
 };
 
+const SAFE_URL_RE = /^https?:\/\//i;
+
+const sanitizeUrl = (raw) => {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  return SAFE_URL_RE.test(s) ? s : null;
+};
+
 const normalizeLinkPreview = (linkPreview) => {
   if (!linkPreview || typeof linkPreview !== "object") {
     return { url: null, title: null, description: null, image: null };
   }
 
   return {
-    url: linkPreview.url ? String(linkPreview.url).trim() : null,
+    url: sanitizeUrl(linkPreview.url),
     title: linkPreview.title ? String(linkPreview.title).trim() : null,
     description: linkPreview.description
       ? String(linkPreview.description).trim()
       : null,
-    image: linkPreview.image ? String(linkPreview.image).trim() : null,
+    image: sanitizeUrl(linkPreview.image),
   };
 };
 
@@ -116,7 +161,7 @@ const parsePollDuration = (duration) => {
   return null;
 };
 
-const normalizePoll = (poll) => {
+const normalizePoll = (poll, existingPoll = null) => {
   if (!poll || typeof poll !== "object") {
     return {
       question: null,
@@ -130,24 +175,35 @@ const normalizePoll = (poll) => {
 
   const options = Array.isArray(poll.options)
     ? poll.options
-        .map((option) => {
-          if (typeof option === "string") {
-            return { text: option.trim(), votes: [] };
+      .map((option) => {
+        if (typeof option === "string") {
+          return { text: option.trim(), votes: [] };
+        }
+        const text = String(option?.text || "").trim();
+        // Preserve votes from existingPoll if available, otherwise initialize to []
+        let votes = [];
+        if (existingPoll && Array.isArray(existingPoll.options)) {
+          const existing = existingPoll.options.find((opt) => opt.text === text);
+          if (existing && Array.isArray(existing.votes)) {
+            votes = existing.votes;
           }
-          return {
-            text: String(option?.text || "").trim(),
-            votes: Array.isArray(option?.votes) ? option.votes : [],
-          };
-        })
-        .filter((option) => option.text)
-        .slice(0, 6)
+        }
+        return { text, votes };
+      })
+      .filter((option) => option.text)
+      .slice(0, 6)
     : [];
 
   const duration = poll.duration ? String(poll.duration).trim() : "7 Days";
   const durationDays = parsePollDuration(duration);
-  const endsAt = durationDays
-    ? new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000)
-    : null;
+
+  // Use existing endsAt if updating, only compute for new polls
+  let endsAt = null;
+  if (existingPoll && existingPoll.endsAt) {
+    endsAt = existingPoll.endsAt;
+  } else if (durationDays) {
+    endsAt = new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000);
+  }
 
   return {
     question: poll.question ? String(poll.question).trim() : null,
@@ -229,6 +285,7 @@ exports.getPosts = async (req, res) => {
       ? String(req.query.type).toLowerCase()
       : "all";
     const sort = req.query.sort ? String(req.query.sort).toLowerCase() : null;
+    const q = req.query.q ? String(req.query.q).trim() : "";
 
     const filter = { $or: [{ isPrivate: false }, { author: userId }] };
 
@@ -238,13 +295,19 @@ exports.getPosts = async (req, res) => {
       filter.type = requestedType;
     }
 
-    // Following tab — filter to posts by people this user follows
+    // Following tab - filter to posts by people this user follows.
     if (tab === "following") {
       const me = await User.findById(userId).select("following");
       const followingIds = me?.following || [];
-      // Show only non-private posts from followed users (preserves privacy)
-      filter.$or = [{ isPrivate: false }, { author: userId }];
-      filter.author = { $in: followingIds };
+      filter.$or = [
+        { isPrivate: false, author: { $in: followingIds } },
+        { author: userId },
+      ];
+    }
+
+    if (tab === "trending") {
+      const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      filter.createdAt = { $gte: since };
     }
 
     const tags = normalizeTags(req.query.tags);
@@ -252,12 +315,24 @@ exports.getPosts = async (req, res) => {
       filter.tags = { $in: tags };
     }
 
+    if (q) {
+      filter.$text = { $search: q };
+    }
+
     const effectiveSort = getEffectiveSort(tab, sort);
 
+    const projection = q
+      ? { score: { $meta: "textScore" } }
+      : null;
+
+    const sortWithText = q
+      ? { score: { $meta: "textScore" }, ...effectiveSort }
+      : effectiveSort;
+
     const [posts, total] = await Promise.all([
-      Post.find(filter)
+      Post.find(filter, projection)
         .populate("author", "name avatar reputation")
-        .sort(effectiveSort)
+        .sort(sortWithText)
         .skip(skip)
         .limit(limit),
       Post.countDocuments(filter),
@@ -324,6 +399,16 @@ exports.createPost = async (req, res) => {
       "author",
       "name avatar reputation",
     );
+
+    const io = getIo(req);
+    // Only emit to global feed if post is public
+    if (!post.isPrivate) {
+      io.emit("feed:post:created", { post });
+    }
+    io.to(`feed:user:${userId}`).emit("feed:user:post-created", {
+      authorId: userId,
+      postId: post._id,
+    });
 
     res.status(201).json(post);
   } catch (err) {
@@ -395,7 +480,13 @@ exports.deletePost = async (req, res) => {
         .json({ message: "Not authorized to delete this post" });
     }
 
-    await Post.deleteOne({ _id: id });
+    await Promise.all([
+      Post.deleteOne({ _id: id }),
+      Comment.deleteMany({ post: id }),
+    ]);
+
+    const io = getIo(req);
+    io.to(`feed:post:${id}`).emit("feed:post:deleted", { postId: id });
 
     res.json({ message: "Deleted" });
   } catch (err) {
@@ -596,14 +687,18 @@ exports.reactToPost = async (req, res) => {
     if (!emoji || !emoji.trim()) {
       return res.status(400).json({ message: "Emoji is required" });
     }
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(404).json({ message: "Post not found" });
-    }
 
-    const post = await Post.findById(id);
+    // Check post access (privacy/ownership)
+    const access = await checkPostAccess(id, userId);
+    if (access.error) {
+      return res.status(access.error.status).json({ message: access.error.message });
+    }
+    const post = access.post;
+    // Reload post with full data for reactions
+    const fullPost = await Post.findById(id);
     if (!post) return res.status(404).json({ message: "Post not found" });
 
-    const reactions = post.reactions || new Map();
+    const reactions = fullPost.reactions || new Map();
     const currentUsers = reactions.get(emoji) || [];
     const alreadyReacted = currentUsers.map(String).includes(userId);
 
@@ -615,31 +710,37 @@ exports.reactToPost = async (req, res) => {
       reactions.set(emoji, [...currentUsers, userId]);
     }
 
-    post.reactions = reactions;
+    fullPost.reactions = reactions;
 
     let total = 0;
-    for (const users of post.reactions.values()) total += users.length;
-    post.reactionCount = total;
+    for (const users of fullPost.reactions.values()) total += users.length;
+    fullPost.reactionCount = total;
 
-    await post.save();
+    await fullPost.save();
 
-    const reactionsObj = {};
-    for (const [key, val] of post.reactions.entries()) {
-      reactionsObj[key] = val;
-    }
+    const reactionsObj = toPlainReactions(fullPost.reactions);
 
-    req.app.get("io").to(`feed:post:${id}`).emit("feed:post:reacted", {
+    const io = getIo(req);
+    io.to(`feed:post:${id}`).emit("feed:post:reacted", {
       postId: id,
       reactions: reactionsObj,
-      reactionCount: post.reactionCount,
+      reactionCount: fullPost.reactionCount,
+    });
+    io.emit("feed:post:reaction-updated", {
+      postId: id,
+      reactionCount: fullPost.reactionCount,
     });
 
     // Reputation update is non-fatal — wrapped separately
-    if (post.author.toString() !== userId) {
+    if (fullPost.author.toString() !== userId) {
       try {
-        await User.findByIdAndUpdate(post.author, {
-          $inc: { reputation: alreadyReacted ? -2 : 2 },
-        });
+        const repDelta = alreadyReacted
+          ? -FEED_REPUTATION.POST_REACTION
+          : FEED_REPUTATION.POST_REACTION;
+        // Aggregation-pipeline update ensures reputation never falls below 0
+        await User.findByIdAndUpdate(fullPost.author, [
+          { $set: { reputation: { $max: [0, { $add: ["$reputation", repDelta] }] } } },
+        ]);
       } catch (repErr) {
         console.warn(
           "reactToPost: reputation update failed (non-fatal):",
@@ -650,10 +751,655 @@ exports.reactToPost = async (req, res) => {
 
     return res.json({
       reactions: reactionsObj,
-      reactionCount: post.reactionCount,
+      reactionCount: fullPost.reactionCount,
     });
   } catch (err) {
     console.error("reactToPost error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/feed/comments?postId=<id>&page=&limit=
+// List comments with one-level replies.
+// ---------------------------------------------------------------------------
+exports.getComments = async (req, res) => {
+  try {
+    const userId = req.user?.id || null;
+    const postId = req.query.postId;
+
+    // Check post access (privacy/ownership)
+    const access = await checkPostAccess(postId, userId);
+    if (access.error) {
+      return res.status(access.error.status).json({ message: access.error.message });
+    }
+
+    const page = clampInt(req.query.page, 1, 1, 100000);
+    const limit = clampInt(req.query.limit, 20, 1, 100);
+    const skip = (page - 1) * limit;
+
+    const [roots, total] = await Promise.all([
+      Comment.find({ post: postId, parentComment: null })
+        .populate("author", "name avatar reputation")
+        .sort({ isAccepted: -1, createdAt: 1 })
+        .skip(skip)
+        .limit(limit),
+      Comment.countDocuments({ post: postId, parentComment: null }),
+    ]);
+
+    const rootIds = roots.map((c) => c._id);
+    const replies = await Comment.find({
+      post: postId,
+      parentComment: { $in: rootIds },
+    })
+      .populate("author", "name avatar reputation")
+      .sort({ createdAt: 1 });
+
+    const repliesByParent = new Map();
+    for (const reply of replies) {
+      const key = reply.parentComment.toString();
+      const list = repliesByParent.get(key) || [];
+      list.push(reply);
+      repliesByParent.set(key, list);
+    }
+
+    const comments = roots.map((root) => ({
+      ...root.toObject(),
+      replies: repliesByParent.get(root._id.toString()) || [],
+    }));
+
+    return res.json({
+      comments,
+      total,
+      page,
+      hasMore: page * limit < total,
+    });
+  } catch (err) {
+    console.error("getComments error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/feed/comments
+// Create a top-level comment or a one-level reply.
+// ---------------------------------------------------------------------------
+exports.createComment = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { postId, content, parentCommentId = null } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ message: "Invalid post ID" });
+    }
+    if (!content || !String(content).trim()) {
+      return res.status(400).json({ message: "Comment content is required" });
+    }
+
+    // Check post access (privacy/ownership)
+    const access = await checkPostAccess(postId, userId);
+    if (access.error) {
+      return res.status(access.error.status).json({ message: access.error.message });
+    }
+    const post = access.post;
+
+    // Reload post with more fields if needed
+    const fullPost = await Post.findById(postId).select(
+      "_id author type questionBonusAwarded isPrivate",
+    );
+    if (!fullPost) return res.status(404).json({ message: "Post not found" });
+
+    let parentComment = null;
+    if (parentCommentId) {
+      if (!mongoose.Types.ObjectId.isValid(parentCommentId)) {
+        return res.status(400).json({ message: "Invalid parent comment ID" });
+      }
+      parentComment = await Comment.findById(parentCommentId).select(
+        "_id parentComment post",
+      );
+      if (!parentComment || parentComment.post.toString() !== postId) {
+        return res.status(404).json({ message: "Parent comment not found" });
+      }
+      if (parentComment.parentComment) {
+        return res.status(400).json({ message: "Only 1-level replies are allowed" });
+      }
+    }
+
+    const created = await Comment.create({
+      post: postId,
+      author: userId,
+      parentComment: parentComment ? parentComment._id : null,
+      content: String(content).trim(),
+    });
+
+    await Post.findByIdAndUpdate(postId, { $inc: { commentsCount: 1 } });
+
+    // First answer bonus for question author (conditional update prevents race)
+    if (fullPost.type === "question" && fullPost.author.toString() !== userId) {
+      const updated = await Post.findOneAndUpdate(
+        { _id: postId, type: "question", questionBonusAwarded: false },
+        { $set: { questionBonusAwarded: true } },
+        { new: false },
+      );
+      // Only increment reputation if the conditional update succeeded
+      if (updated) {
+        await User.findByIdAndUpdate(fullPost.author, {
+          $inc: { reputation: FEED_REPUTATION.QUESTION_BONUS },
+        });
+      }
+    }
+
+    const comment = await Comment.findById(created._id).populate(
+      "author",
+      "name avatar reputation",
+    );
+
+    const io = getIo(req);
+    io.to(`feed:post:${postId}`).emit("feed:comment:created", { comment });
+
+    return res.status(201).json(comment);
+  } catch (err) {
+    console.error("createComment error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// PATCH /api/feed/comments/:id
+// ---------------------------------------------------------------------------
+exports.updateComment = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+    const { content } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Comment not found" });
+    }
+    if (!content || !String(content).trim()) {
+      return res.status(400).json({ message: "Comment content is required" });
+    }
+
+    const comment = await Comment.findById(id);
+    if (!comment) return res.status(404).json({ message: "Comment not found" });
+    if (comment.author.toString() !== userId) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    comment.content = String(content).trim();
+    await comment.save();
+    await comment.populate("author", "name avatar reputation");
+
+    return res.json(comment);
+  } catch (err) {
+    console.error("updateComment error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// DELETE /api/feed/comments/:id
+// ---------------------------------------------------------------------------
+exports.deleteComment = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Comment not found" });
+    }
+
+    const comment = await Comment.findById(id);
+    if (!comment) return res.status(404).json({ message: "Comment not found" });
+    if (comment.author.toString() !== userId) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    // Load post to check/unwind acceptedComment state
+    const post = await Post.findById(comment.post).select(
+      "acceptedComment status author"
+    );
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    // Check if deleting comment is the accepted answer and unwind it
+    const deleteFilter = { $or: [{ _id: id }, { parentComment: id }] };
+    const allToDelete = await Comment.find(deleteFilter).select("_id author isAccepted");
+    const deleteIds = new Set(allToDelete.map((c) => c._id.toString()));
+    const isAcceptedBeingDeleted = allToDelete.some((c) => String(c._id) === String(post.acceptedComment));
+
+    if (isAcceptedBeingDeleted && post.acceptedComment) {
+      // Unwind accepted answer state
+      const acceptedAuthor = await Comment.findById(post.acceptedComment).select("author");
+      if (acceptedAuthor) {
+        await User.findByIdAndUpdate(acceptedAuthor.author, {
+          $inc: { reputation: -FEED_REPUTATION.ACCEPTED_ANSWER },
+        });
+      }
+      await Post.findByIdAndUpdate(post._id, {
+        acceptedComment: null,
+        status: "open",
+      });
+    }
+
+    const deleteFilter2 = { $or: [{ _id: id }, { parentComment: id }] };
+    const toDelete = await Comment.countDocuments(deleteFilter2);
+    await Comment.deleteMany(deleteFilter2);
+
+    const deletedCount = Math.max(1, toDelete);
+
+    // Recompute from source of truth to avoid drift and pipeline compatibility issues.
+    const remainingComments = await Comment.countDocuments({ post: comment.post });
+    const updatedPost = await Post.findByIdAndUpdate(
+      comment.post,
+      { $set: { commentsCount: Math.max(0, remainingComments) } },
+      { new: true },
+    ).select("commentsCount");
+
+    try {
+      const io = getIo(req);
+      io.to(`feed:post:${comment.post.toString()}`).emit("feed:comment:deleted", {
+        commentId: id,
+        postId: comment.post,
+      });
+    } catch (socketErr) {
+      console.warn("deleteComment socket emit failed (non-fatal):", socketErr.message);
+    }
+
+    return res.json({
+      message: "Deleted",
+      deletedCount,
+      commentsCount: updatedPost?.commentsCount ?? 0,
+    });
+  } catch (err) {
+    console.error("deleteComment error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/feed/comments/:id/react
+// Toggle emoji reaction on a comment.
+// ---------------------------------------------------------------------------
+exports.reactToComment = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+    const { emoji } = req.body;
+
+    if (!emoji || !emoji.trim()) {
+      return res.status(400).json({ message: "Emoji is required" });
+    }
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Comment not found" });
+    }
+
+    const comment = await Comment.findById(id);
+    if (!comment) return res.status(404).json({ message: "Comment not found" });
+
+    // Check post access (privacy/ownership) before allowing reaction
+    const access = await checkPostAccess(comment.post, userId);
+    if (access.error) {
+      return res.status(access.error.status).json({ message: access.error.message });
+    }
+
+    const reactions = comment.reactions || new Map();
+    const currentUsers = reactions.get(emoji) || [];
+    const alreadyReacted = currentUsers.map(String).includes(userId);
+
+    if (alreadyReacted) {
+      const updated = currentUsers.filter((uid) => uid.toString() !== userId);
+      if (updated.length === 0) reactions.delete(emoji);
+      else reactions.set(emoji, updated);
+    } else {
+      reactions.set(emoji, [...currentUsers, userId]);
+    }
+
+    comment.reactions = reactions;
+
+    let total = 0;
+    for (const users of comment.reactions.values()) total += users.length;
+    comment.reactionCount = total;
+    await comment.save();
+
+    if (comment.author.toString() !== userId) {
+      try {
+        const repDelta = alreadyReacted
+          ? -FEED_REPUTATION.COMMENT_REACTION
+          : FEED_REPUTATION.COMMENT_REACTION;
+        // Aggregation-pipeline update ensures reputation never falls below 0
+        await User.findByIdAndUpdate(comment.author, [
+          { $set: { reputation: { $max: [0, { $add: ["$reputation", repDelta] }] } } },
+        ]);
+      } catch (repErr) {
+        console.warn(
+          "reactToComment: reputation update failed (non-fatal):",
+          repErr.message,
+        );
+      }
+    }
+
+    const reactionsObj = toPlainReactions(comment.reactions);
+    getIo(req)
+      .to(`feed:post:${comment.post.toString()}`)
+      .emit("feed:comment:reacted", {
+        postId: comment.post,
+        commentId: comment._id,
+        reactions: reactionsObj,
+        reactionCount: comment.reactionCount,
+      });
+
+    return res.json({
+      reactions: reactionsObj,
+      reactionCount: comment.reactionCount,
+    });
+  } catch (err) {
+    console.error("reactToComment error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/feed/posts/:postId/accept/:commentId
+// Mark a comment as accepted answer for a question.
+// ---------------------------------------------------------------------------
+exports.toggleAcceptedAnswer = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { postId, commentId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(postId) || !mongoose.Types.ObjectId.isValid(commentId)) {
+      return res.status(400).json({ message: "Invalid ID" });
+    }
+
+    // Use transaction for atomic updates
+    const session = await Post.startSession();
+    session.startTransaction();
+
+    try {
+      const post = await Post.findById(postId).session(session);
+      const comment = await Comment.findById(commentId).session(session);
+
+      if (!post || !comment || comment.post.toString() !== postId) {
+        await session.abortTransaction();
+        return res.status(404).json({ message: "Post or comment not found" });
+      }
+      if (post.type !== "question") {
+        await session.abortTransaction();
+        return res.status(400).json({ message: "Accepted answers are only for questions" });
+      }
+      if (post.author.toString() !== userId) {
+        await session.abortTransaction();
+        return res.status(403).json({ message: "Only question author can accept answers" });
+      }
+
+      const previouslyAcceptedId = post.acceptedComment ? post.acceptedComment.toString() : null;
+
+      // Toggle off when selecting the currently accepted comment
+      if (previouslyAcceptedId === commentId) {
+        await Comment.findByIdAndUpdate(commentId, { isAccepted: false }).session(session);
+        await Post.findByIdAndUpdate(postId, { acceptedComment: null, status: "open" }).session(session);
+        await User.findByIdAndUpdate(comment.author, [
+          { $set: { reputation: { $max: [0, { $subtract: ["$reputation", FEED_REPUTATION.ACCEPTED_ANSWER] }] } } },
+        ]).session(session);
+
+        await session.commitTransaction();
+        getIo(req).to(`feed:post:${postId}`).emit("feed:answer:accepted", {
+          postId,
+          commentId: null,
+          resolved: false,
+        });
+        return res.json({ acceptedComment: null, status: "open" });
+      }
+
+      // Clear previous accepted answer if exists
+      if (previouslyAcceptedId) {
+        const previousComment = await Comment.findByIdAndUpdate(
+          previouslyAcceptedId,
+          { isAccepted: false },
+          { new: true },
+        ).session(session);
+        if (previousComment) {
+          await User.findByIdAndUpdate(previousComment.author, [
+            { $set: { reputation: { $max: [0, { $subtract: ["$reputation", FEED_REPUTATION.ACCEPTED_ANSWER] }] } } },
+          ]).session(session);
+        }
+      }
+
+      // Set new accepted answer
+      await Comment.findByIdAndUpdate(commentId, { isAccepted: true }).session(session);
+      await Post.findByIdAndUpdate(postId, { acceptedComment: commentId, status: "resolved" }).session(session);
+      await User.findByIdAndUpdate(comment.author, [
+        { $set: { reputation: { $add: ["$reputation", FEED_REPUTATION.ACCEPTED_ANSWER] } } },
+      ]).session(session);
+
+      await session.commitTransaction();
+
+      getIo(req).to(`feed:post:${postId}`).emit("feed:answer:accepted", {
+        postId,
+        commentId,
+        resolved: true,
+      });
+
+      return res.json({ acceptedComment: commentId, status: "resolved" });
+    } catch (err) {
+      await session.abortTransaction();
+      throw err;
+    } finally {
+      session.endSession();
+    }
+  } catch (err) {
+    console.error("toggleAcceptedAnswer error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/feed/posts/:id/poll-vote
+// Toggle vote for a poll option.
+// ---------------------------------------------------------------------------
+exports.votePoll = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+    const { optionIndex } = req.body;
+
+    // Check post access (privacy/ownership)
+    const access = await checkPostAccess(id, userId);
+    if (access.error) {
+      return res.status(access.error.status).json({ message: access.error.message });
+    }
+    const post = access.post;
+    // Reload post with poll data
+    const fullPost = await Post.findById(id);
+    if (!fullPost || fullPost.type !== "poll") {
+      return res.status(404).json({ message: "Poll not found" });
+    }
+    Object.assign(post, fullPost.toObject());
+
+    if (!Number.isInteger(optionIndex)) {
+      return res.status(400).json({ message: "optionIndex must be an integer" });
+    }
+    if (optionIndex < 0 || optionIndex >= post.poll.options.length) {
+      return res.status(400).json({ message: "Invalid poll option" });
+    }
+
+    if (post.poll.endsAt && new Date(post.poll.endsAt) < new Date()) {
+      return res.status(400).json({ message: "Poll has expired" });
+    }
+
+    const uid = userId.toString();
+    const options = post.poll.options;
+
+    if (!post.poll.multiSelect) {
+      for (let i = 0; i < options.length; i += 1) {
+        options[i].votes = options[i].votes.filter((v) => v.toString() !== uid);
+      }
+    }
+
+    const targetVotes = options[optionIndex].votes;
+    const hasVoted = targetVotes.some((v) => v.toString() === uid);
+    if (hasVoted) {
+      options[optionIndex].votes = targetVotes.filter((v) => v.toString() !== uid);
+    } else {
+      options[optionIndex].votes.push(userId);
+    }
+
+    await post.save();
+
+    getIo(req).to(`feed:post:${id}`).emit("feed:poll:voted", {
+      postId: id,
+      poll: post.poll,
+    });
+
+    return res.json({ poll: post.poll });
+  } catch (err) {
+    console.error("votePoll error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/feed/tags/:tag/follow
+// Toggle follow/unfollow a tag.
+// ---------------------------------------------------------------------------
+exports.followTag = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const rawTag = String(req.params.tag || "").trim().toLowerCase();
+    if (!rawTag) return res.status(400).json({ message: "Tag is required" });
+
+    const me = await User.findById(userId).select("followedTags");
+    if (!me) return res.status(404).json({ message: "User not found" });
+
+    const already = me.followedTags.includes(rawTag);
+
+    const update = already
+      ? { $pull: { followedTags: rawTag } }
+      : { $addToSet: { followedTags: rawTag } };
+
+    await User.findByIdAndUpdate(userId, update);
+
+    getIo(req).to(`feed:user:${userId}`).emit("feed:tag:followed", {
+      userId,
+      tag: rawTag,
+      following: !already,
+    });
+
+    return res.json({ tag: rawTag, following: !already });
+  } catch (err) {
+    console.error("followTag error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/feed/tags/trending
+// ---------------------------------------------------------------------------
+exports.getTrendingTags = async (req, res) => {
+  try {
+    const days = clampInt(req.query.days, 30, 1, 90);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const tags = await Post.aggregate([
+      {
+        $match: {
+          isPrivate: false,
+          createdAt: { $gte: since },
+          tags: { $exists: true, $ne: [] },
+        },
+      },
+      { $unwind: "$tags" },
+      {
+        $group: {
+          _id: "$tags",
+          posts: { $sum: 1 },
+          reactions: { $sum: "$reactionCount" },
+          comments: { $sum: "$commentsCount" },
+        },
+      },
+      {
+        $addFields: {
+          score: {
+            $add: [
+              "$posts",
+              { $multiply: ["$reactions", 2] },
+              "$comments",
+            ],
+          },
+        },
+      },
+      { $sort: { score: -1, posts: -1 } },
+      { $limit: 20 },
+      {
+        $project: {
+          _id: 0,
+          tag: "$_id",
+          posts: 1,
+          reactions: 1,
+          comments: 1,
+          score: 1,
+        },
+      },
+    ]);
+
+    return res.json(tags);
+  } catch (err) {
+    console.error("getTrendingTags error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/feed/search
+// Full-text post search with filters.
+// ---------------------------------------------------------------------------
+exports.searchFeed = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const page = clampInt(req.query.page, 1, 1, 100000);
+    const limit = clampInt(req.query.limit, 20, 1, 50);
+    const skip = (page - 1) * limit;
+
+    const q = req.query.q ? String(req.query.q).trim() : "";
+    const type = req.query.type ? String(req.query.type).toLowerCase() : "all";
+    const tags = normalizeTags(req.query.tags);
+    const sort = req.query.sort ? String(req.query.sort).toLowerCase() : "latest";
+
+    const filter = { $or: [{ isPrivate: false }, { author: userId }] };
+
+    if (type !== "all" && VALID_TYPES.includes(type)) {
+      filter.type = type;
+    }
+    if (tags.length) {
+      filter.tags = { $in: tags };
+    }
+    if (q) {
+      filter.$text = { $search: q };
+    }
+
+    const projection = q ? { score: { $meta: "textScore" } } : null;
+    const sortPreset = SORT_PRESETS[sort] || SORT_PRESETS.latest;
+    const sorting = q
+      ? { score: { $meta: "textScore" }, ...sortPreset }
+      : sortPreset;
+
+    const [posts, total] = await Promise.all([
+      Post.find(filter, projection)
+        .populate("author", "name avatar reputation")
+        .sort(sorting)
+        .skip(skip)
+        .limit(limit),
+      Post.countDocuments(filter),
+    ]);
+
+    return res.json({
+      posts,
+      total,
+      page,
+      hasMore: page * limit < total,
+    });
+  } catch (err) {
+    console.error("searchFeed error:", err.message);
     return res.status(500).json({ message: "Server error" });
   }
 };

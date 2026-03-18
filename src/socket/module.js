@@ -18,6 +18,21 @@
 const Workspace = require("../models/Workspace");
 const Module = require("../models/Module");
 const ModuleMessage = require("../models/ModuleMessage");
+const { DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const r2Client = require("../config/r2");
+
+async function deleteR2Attachments(attachments) {
+  if (!attachments?.length) return;
+  await Promise.allSettled(
+    attachments.map((att) => {
+      const key = att.publicId;
+      if (!key) return Promise.resolve();
+      return r2Client.send(
+        new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key })
+      );
+    })
+  );
+}
 const mongoose = require("mongoose");
 
 // Reuse same constants as typing.js
@@ -41,7 +56,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
     try {
       // Verify module exists and user is a workspace member
       const mod = await Module.findById(moduleId).select(
-        "workspaceId isPrivate allowedMembers",
+        "workspaceId isPrivate allowedMembers allowedRoles",
       );
       if (!mod) return;
 
@@ -61,7 +76,10 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         const isAllowed = mod.allowedMembers
           .map(String)
           .includes(socket.userId);
-        if (!isAdmin && !isAllowed) return;
+        const roleAllowed = mod.allowedRoles?.some((roleId) =>
+          memberRecord?.roleIds?.map(String).includes(roleId.toString()),
+        );
+        if (!isAdmin && !isAllowed && !roleAllowed) return;
       }
 
       socket.join(`module:${moduleId}`);
@@ -86,7 +104,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
       try {
         // Verify module + membership
         const mod = await Module.findOne({ _id: moduleId, workspaceId }).select(
-          "workspaceId type isPrivate allowedMembers",
+          "workspaceId type isPrivate allowedMembers allowedRoles",
         );
         if (!mod)
           return socket.emit("message:error", { message: "Module not found" });
@@ -110,7 +128,10 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
           const isAllowed = mod.allowedMembers
             .map(String)
             .includes(socket.userId);
-          if (!isAdmin && !isAllowed) {
+          const roleAllowed = mod.allowedRoles?.some((roleId) =>
+            memberRecord?.roleIds?.map(String).includes(roleId.toString()),
+          );
+          if (!isAdmin && !isAllowed && !roleAllowed) {
             return socket.emit("message:error", { message: "Access denied" });
           }
         }
@@ -135,12 +156,13 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
           if (!replyMsg) return;
         }
 
+        const safeMessageText = (text ?? "").trim();
         // Create the message
         const message = await ModuleMessage.create({
           moduleId,
           workspaceId,
           sender: socket.userId,
-          text: text?.trim() || null,
+          text: safeMessageText || null,
           gifUrl: gifUrl || null,
           replyTo: replyTo || null,
           attachments: attachments || [],
@@ -148,15 +170,15 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
 
         // ── Handle Thread Metadata Update ────────────────────────────
         if (replyTo) {
-          await ModuleMessage.findByIdAndUpdate(replyTo, {
+          const updatedReplyTo = await ModuleMessage.findByIdAndUpdate(replyTo, {
             $inc: { replyCount: 1 },
             $set: { lastReplyAt: message.createdAt },
-          });
+          }, { new: true });
           
           // Emit thread update to the room
           io.to(`module:${moduleId}`).emit("module:message:thread:update", {
             messageId: replyTo,
-            replyCount: 1,
+            replyCount: updatedReplyTo.replyCount,
             lastReplyAt: message.createdAt,
           });
         }
@@ -180,7 +202,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         }
         await Module.findByIdAndUpdate(moduleId, {
           lastMessage: {
-            text: gifUrl ? "GIF" : text.trim(),
+            text: gifUrl ? "GIF" : safeMessageText,
             sender: socket.userId,
             timestamp: message.createdAt,
           },
@@ -352,9 +374,11 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         if (!isAdmin) return;
       }
 
+      await deleteR2Attachments(message.attachments);
       message.isDeleted = true;
       message.text = null;
       message.gifUrl = null;
+      message.attachments = [];
       await message.save();
 
       io.to(`module:${moduleId}`).emit("module:message:deleted", {
@@ -423,8 +447,12 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
       if (!memberRecord) return;
 
       const isAdmin = memberRecord.role === "owner" || memberRecord.role === "admin";
-      // TODO: Add permission bitmask check here once roles are fully implemented
-      if (!isAdmin) {
+      
+      const hasManageMessages = (workspace.roles || [])
+        .filter((r) => memberRecord.roleIds?.map(String).includes(r._id.toString()))
+        .some((r) => r.permissions?.includes("MANAGE_MESSAGES"));
+
+      if (!isAdmin && !hasManageMessages) {
         return socket.emit("message:error", { message: "Permission denied to pin messages" });
       }
 
@@ -462,7 +490,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
     // Security: verify user can access this module
     try {
       const mod = await Module.findById(moduleId).select(
-        "workspaceId isPrivate allowedMembers",
+        "workspaceId isPrivate allowedMembers allowedRoles",
       );
       if (!mod) return;
 
@@ -481,7 +509,10 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         const isAllowed = mod.allowedMembers
           .map(String)
           .includes(socket.userId);
-        if (!isAdmin && !isAllowed) return;
+        const roleAllowed = mod.allowedRoles?.some((roleId) =>
+          memberRecord?.roleIds?.map(String).includes(roleId.toString()),
+        );
+        if (!isAdmin && !isAllowed && !roleAllowed) return;
       }
     } catch {
       return;
@@ -540,7 +571,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
     try {
       // Verify user can access this module
       const mod = await Module.findById(moduleId).select(
-        "workspaceId isPrivate allowedMembers",
+        "workspaceId isPrivate allowedMembers allowedRoles",
       );
       if (!mod) return;
 
@@ -559,7 +590,10 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         const isAllowed = mod.allowedMembers
           .map(String)
           .includes(socket.userId);
-        if (!isAdmin && !isAllowed) return;
+        const roleAllowed = mod.allowedRoles?.some((roleId) =>
+          memberRecord?.roleIds?.map(String).includes(roleId.toString()),
+        );
+        if (!isAdmin && !isAllowed && !roleAllowed) return;
       }
 
       // Reset unread count for this user

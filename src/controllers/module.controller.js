@@ -46,6 +46,82 @@ const checkMembership = async (res, workspaceId, userId) => {
 };
 
 // ---------------------------------------------------------------------------
+// Internal helper — Compute permissions for a member in a specific module
+// Evaluates workspace base roles + module-specific permission overrides.
+// ---------------------------------------------------------------------------
+const computePermissions = (workspace, memberRecord, module) => {
+  const { PERMISSIONS } = Workspace;
+  const isOwner = memberRecord.role === "owner";
+  
+  // Default permissions if they have no custom roles
+  const basePerms = new Set();
+  
+  if (isOwner) {
+    // Owners have everything natively
+    Object.values(PERMISSIONS).forEach((p) => basePerms.add(p));
+    return basePerms;
+  }
+
+  // 1. Gather all base permissions from the user's roles
+  if (memberRecord.roleIds && memberRecord.roleIds.length > 0) {
+    const roleIdsStr = memberRecord.roleIds.map(String);
+    const userRoles = workspace.roles.filter((r) => roleIdsStr.includes(r._id.toString()));
+    
+    userRoles.forEach((role) => {
+      role.permissions?.forEach((p) => basePerms.add(p));
+    });
+  } else if (memberRecord.role === "admin") {
+    // Legacy support for pure 'admin' string role
+    basePerms.add(PERMISSIONS.ADMINISTRATOR);
+  } else {
+    // Default member fallback (if no roles are assigned at all)
+    // They can view channels and send messages by default
+    basePerms.add(PERMISSIONS.VIEW_CHANNEL);
+    basePerms.add(PERMISSIONS.SEND_MESSAGES);
+  }
+
+  // Administrators bypass all overrides
+  if (basePerms.has(PERMISSIONS.ADMINISTRATOR)) {
+    Object.values(PERMISSIONS).forEach((p) => basePerms.add(p));
+    return basePerms;
+  }
+
+  // 2. Apply module-specific Permission Overrides if they exist
+  if (module && module.permissionOverrides && module.permissionOverrides.length > 0) {
+    const roleIdStrings = memberRecord.roleIds?.map(String) || [];
+    
+    // a. Apply role-based overrides first
+    const roleOverrides = module.permissionOverrides.filter((ov) => 
+      ov.targetType === "role" && roleIdStrings.includes(ov.targetId.toString())
+    );
+
+    const denyRoles = new Set();
+    const allowRoles = new Set();
+    
+    roleOverrides.forEach((ov) => {
+      ov.deny?.forEach((p) => denyRoles.add(p));
+      ov.allow?.forEach((p) => allowRoles.add(p));
+    });
+
+    // Remove denied, add allowed
+    denyRoles.forEach((p) => basePerms.delete(p));
+    allowRoles.forEach((p) => basePerms.add(p));
+
+    // b. Apply member-based overrides (takes precedence over roles)
+    const memberOverride = module.permissionOverrides.find((ov) => 
+      ov.targetType === "member" && ov.targetId.toString() === memberRecord.user.toString()
+    );
+
+    if (memberOverride) {
+      memberOverride.deny?.forEach((p) => basePerms.delete(p));
+      memberOverride.allow?.forEach((p) => basePerms.add(p));
+    }
+  }
+
+  return basePerms;
+};
+
+// ---------------------------------------------------------------------------
 // POST /api/workspaces/:workspaceId/modules
 // Create a new module in the workspace (admin/owner only).
 // Body: { name, description?, type?, category?, position?, isPrivate? }
@@ -73,7 +149,7 @@ exports.createModule = async (req, res) => {
     }
 
     // ── 3. Validate name ─────────────────────────────────────────
-    const { name, description, type, category, position, isPrivate } = req.body;
+    const { name, description, type, category, position, isPrivate, permissionOverrides } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ message: "Module name is required" });
     }
@@ -124,6 +200,7 @@ exports.createModule = async (req, res) => {
       category: resolvedCategory,
       position: resolvedPosition,
       isPrivate: isPrivate || false,
+      permissionOverrides: permissionOverrides || [],
       createdBy: req.user.id,
     });
 
@@ -158,10 +235,7 @@ exports.listModules = async (req, res) => {
     // ── 2. Inline membership check ───────────────────────────────
     const result = await checkMembership(res, workspaceId, req.user.id);
     if (!result) return;
-    const { memberRecord } = result;
-
-    const isAdmin =
-      memberRecord.role === "owner" || memberRecord.role === "admin";
+    const { workspace, memberRecord } = result;
 
     // ── 3. Fetch and sort modules ────────────────────────────────
     const modules = await Module.find({ workspaceId }).sort({
@@ -172,9 +246,8 @@ exports.listModules = async (req, res) => {
     // ── 4 & 5. Filter private + inject myUnread ──────────────────
     const accessible = modules
       .filter((m) => {
-        if (!m.isPrivate) return true;
-        if (isAdmin) return true;
-        return m.allowedMembers.some((uid) => uid.toString() === req.user.id);
+        const perms = computePermissions(workspace, memberRecord, m);
+        return perms.has(Workspace.PERMISSIONS.VIEW_CHANNEL);
       })
       .map((m) => {
         const obj = m.toObject();
@@ -208,10 +281,7 @@ exports.getModule = async (req, res) => {
     // ── 2. Inline membership check ───────────────────────────────
     const result = await checkMembership(res, workspaceId, req.user.id);
     if (!result) return;
-    const { memberRecord } = result;
-
-    const isAdmin =
-      memberRecord.role === "owner" || memberRecord.role === "admin";
+    const { workspace, memberRecord } = result;
 
     // ── 3. Fetch module ──────────────────────────────────────────
     const module = await Module.findOne({ _id: moduleId, workspaceId });
@@ -220,15 +290,9 @@ exports.getModule = async (req, res) => {
     }
 
     // ── 4. Private module check ──────────────────────────────────
-    if (module.isPrivate && !isAdmin) {
-      const allowed = module.allowedMembers.some(
-        (uid) => uid.toString() === req.user.id,
-      );
-      if (!allowed) {
-        return res
-          .status(403)
-          .json({ message: "Access denied to this module" });
-      }
+    const perms = computePermissions(workspace, memberRecord, module);
+    if (!perms.has(Workspace.PERMISSIONS.VIEW_CHANNEL)) {
+      return res.status(403).json({ message: "Access denied to this module" });
     }
 
     // ── 5. Populate createdBy ────────────────────────────────────
@@ -282,13 +346,14 @@ exports.updateModule = async (req, res) => {
     }
 
     // ── 3. Check at least one field provided ─────────────────────
-    const { name, description, type, category, isPrivate } = req.body;
+    const { name, description, type, category, isPrivate, permissionOverrides } = req.body;
     const hasAny =
       name !== undefined ||
       description !== undefined ||
       type !== undefined ||
       category !== undefined ||
-      isPrivate !== undefined;
+      isPrivate !== undefined ||
+      permissionOverrides !== undefined;
 
     if (!hasAny) {
       return res.status(400).json({ message: "No update fields provided" });
@@ -349,6 +414,11 @@ exports.updateModule = async (req, res) => {
       changes.isPrivate = isPrivate;
     }
 
+    if (permissionOverrides !== undefined) {
+      module.permissionOverrides = permissionOverrides;
+      changes.permissionOverrides = permissionOverrides;
+    }
+
     await module.save();
 
     // ── 5. Emit socket event ─────────────────────────────────────
@@ -382,23 +452,23 @@ exports.deleteModule = async (req, res) => {
       return res.status(400).json({ message: "Invalid module ID" });
     }
 
-    // ── 2. Inline membership check (admin/owner required) ────────
+    // ── 2. Inline membership check ───────────────────────────────
     const result = await checkMembership(res, workspaceId, req.user.id);
     if (!result) return;
-    const { memberRecord } = result;
-
-    const isAdmin =
-      memberRecord.role === "owner" || memberRecord.role === "admin";
-    if (!isAdmin) {
-      return res
-        .status(403)
-        .json({ message: "Only workspace admins can perform this action" });
-    }
+    const { workspace, memberRecord } = result;
 
     // ── 2b. Fetch module ─────────────────────────────────────────
     const module = await Module.findOne({ _id: moduleId, workspaceId });
     if (!module) {
       return res.status(404).json({ message: "Module not found" });
+    }
+
+    // ── 2c. Permission check (MANAGE_CHANNELS required) ──────────
+    const perms = computePermissions(workspace, memberRecord, module);
+    if (!perms.has(Workspace.PERMISSIONS.MANAGE_CHANNELS)) {
+      return res
+        .status(403)
+        .json({ message: "Only members with Manage Channels permission can delete modules" });
     }
 
     // ── 3. Emit before deletion ──────────────────────────────────
@@ -507,10 +577,7 @@ exports.getModuleMessages = async (req, res) => {
     // ── 2. Inline membership check ───────────────────────────────
     const result = await checkMembership(res, workspaceId, req.user.id);
     if (!result) return;
-    const { memberRecord } = result;
-
-    const isAdmin =
-      memberRecord.role === "owner" || memberRecord.role === "admin";
+    const { workspace, memberRecord } = result;
 
     // ── 2b. Fetch module ─────────────────────────────────────────
     const module = await Module.findOne({ _id: moduleId, workspaceId });
@@ -519,15 +586,9 @@ exports.getModuleMessages = async (req, res) => {
     }
 
     // ── 3. Private module check ──────────────────────────────────
-    if (module.isPrivate && !isAdmin) {
-      const allowed = module.allowedMembers.some(
-        (uid) => uid.toString() === req.user.id,
-      );
-      if (!allowed) {
-        return res
-          .status(403)
-          .json({ message: "Access denied to this module" });
-      }
+    const perms = computePermissions(workspace, memberRecord, module);
+    if (!perms.has(Workspace.PERMISSIONS.VIEW_CHANNEL)) {
+      return res.status(403).json({ message: "Access denied to this module" });
     }
 
     // ── 4. Pagination ────────────────────────────────────────────
@@ -581,22 +642,25 @@ exports.sendModuleMessage = async (req, res) => {
       return res.status(400).json({ message: "Invalid module ID" });
     }
 
-    // ── 2. Inline membership check ───────────────────────────────
-    const result = await checkMembership(res, workspaceId, req.user.id);
-    if (!result) return;
-    const { memberRecord } = result;
-
-    // ── 2b. Fetch module ─────────────────────────────────────────
-    const module = await Module.findOne({ _id: moduleId, workspaceId });
-    if (!module) {
-      return res.status(404).json({ message: "Module not found" });
+    // ── 3. Check access & permissions ──────────────────────────────
+    const perms = computePermissions(workspace, memberRecord, module);
+    
+    if (!perms.has(Workspace.PERMISSIONS.VIEW_CHANNEL)) {
+      return res.status(403).json({ message: "Access denied to this module" });
     }
 
-    // ── 3. Announcement check ────────────────────────────────────
-    if (module.type === "announcement" && memberRecord.role === "member") {
+    if (!perms.has(Workspace.PERMISSIONS.SEND_MESSAGES)) {
+      return res.status(403).json({ message: "You do not have permission to send messages here" });
+    }
+
+    if (
+      module.type === "announcement" && 
+      !perms.has(Workspace.PERMISSIONS.MANAGE_MESSAGES) && 
+      !perms.has(Workspace.PERMISSIONS.MANAGE_CHANNELS)
+    ) {
       return res
         .status(403)
-        .json({ message: "Only admins can post in announcement modules" });
+        .json({ message: "Only members with Manage Messages permission can post in announcements" });
     }
 
     // ── 4 & 5. Validate content ──────────────────────────────────
@@ -853,12 +917,15 @@ exports.deleteModuleMessage = async (req, res) => {
     // ── 2. Inline membership check ───────────────────────────────
     const result = await checkMembership(res, workspaceId, req.user.id);
     if (!result) return;
-    const { memberRecord } = result;
+    const { workspace, memberRecord } = result;
 
-    const isAdmin =
-      memberRecord.role === "owner" || memberRecord.role === "admin";
+    // ── 2b. Fetch module for permissions ─────────────────────────
+    const module = await Module.findOne({ _id: moduleId, workspaceId });
+    if (!module) {
+      return res.status(404).json({ message: "Module not found" });
+    }
 
-    // ── 2b. Fetch message ────────────────────────────────────────
+    // ── 2c. Fetch message ────────────────────────────────────────
     const message = await ModuleMessage.findOne({ _id: msgId, moduleId });
     if (!message) {
       return res.status(404).json({ message: "Message not found" });
@@ -868,11 +935,13 @@ exports.deleteModuleMessage = async (req, res) => {
 
     // ── 3. Branch on deletion mode ───────────────────────────────
     if (forEveryone) {
-      // Only sender or admin can delete for everyone
+      const perms = computePermissions(workspace, memberRecord, module);
       const isSender = message.sender.toString() === req.user.id;
-      if (!isSender && !isAdmin) {
+      
+      // Only sender or someone with MANAGE_MESSAGES can delete for everyone
+      if (!isSender && !perms.has(Workspace.PERMISSIONS.MANAGE_MESSAGES)) {
         return res.status(403).json({
-          message: "Only the sender or an admin can delete for everyone",
+          message: "Only the sender or members with Manage Messages permission can delete for everyone",
         });
       }
 
