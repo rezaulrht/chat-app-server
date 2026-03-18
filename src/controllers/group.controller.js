@@ -24,6 +24,14 @@ const { MAX_GROUP_SIZE } = require("../models/Conversation");
 // Internal helper — force-joins every active socket for a set of userIds
 // into a Socket.io room. Safe to call even when Redis is unavailable.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Helper
+// ---------------------------------------------------------------------------
+const sanitizeDescription = (description) => {
+  if (typeof description !== "string") return "";
+  return description.trim();
+};
+
 const joinSocketsToRoom = async (io, userIds, roomId) => {
   if (!getIsRedisConnected()) {
     console.warn(
@@ -55,20 +63,16 @@ const joinSocketsToRoom = async (io, userIds, roomId) => {
 // ---------------------------------------------------------------------------
 exports.createGroup = async (req, res) => {
   try {
-    const creatorId = req.user.id;
-    const { name, participantIds, avatar } = req.body;
+    let { name, description, participantIds, avatar } = req.body;
+    const userId = req.user.id;
+    const creatorId = userId; // ✅ FIXED
 
-    // ── Validate name ────────────────────────────────────────────
-    if (!name || !name.trim()) {
+    description = sanitizeDescription(description);
+
+    if (!name?.trim()) {
       return res.status(400).json({ message: "Group name is required" });
     }
-    if (name.trim().length > 100) {
-      return res
-        .status(400)
-        .json({ message: "Group name must be 100 characters or fewer" });
-    }
 
-    // ── Validate participantIds ──────────────────────────────────
     if (!Array.isArray(participantIds) || participantIds.length < 2) {
       return res.status(400).json({
         message:
@@ -76,7 +80,6 @@ exports.createGroup = async (req, res) => {
       });
     }
 
-    // Strip duplicates and remove the creator if accidentally included
     const uniqueOtherIds = [
       ...new Set(participantIds.map(String).filter((id) => id !== creatorId)),
     ];
@@ -88,14 +91,13 @@ exports.createGroup = async (req, res) => {
       });
     }
 
-    const totalCount = uniqueOtherIds.length + 1; // +1 for creator
+    const totalCount = uniqueOtherIds.length + 1;
     if (totalCount > MAX_GROUP_SIZE) {
       return res.status(400).json({
         message: `Groups cannot exceed ${MAX_GROUP_SIZE} members`,
       });
     }
 
-    // Verify all participant IDs actually exist
     const foundUsers = await User.find({ _id: { $in: uniqueOtherIds } }).select(
       "_id",
     );
@@ -107,16 +109,15 @@ exports.createGroup = async (req, res) => {
 
     const allParticipantIds = [creatorId, ...uniqueOtherIds];
 
-    // ── Build initial unreadCount map (0 for everyone) ──────────
     const initialUnread = {};
     for (const id of allParticipantIds) {
       initialUnread[id] = 0;
     }
 
-    // ── Create the conversation ──────────────────────────────────
     const conversation = await Conversation.create({
       type: "group",
       name: name.trim(),
+      description, // ✅ already sanitized
       avatar: avatar || null,
       createdBy: creatorId,
       admins: [creatorId],
@@ -130,16 +131,18 @@ exports.createGroup = async (req, res) => {
       { path: "createdBy", select: "name avatar" },
     ]);
 
-    // ── Socket: force-join all participants into the room ────────
     const roomId = `conv:${conversation._id}`;
     const io = req.app.get("io");
+
     if (io) {
       await joinSocketsToRoom(io, allParticipantIds, roomId);
+
       io.to(roomId).emit("group:created", {
         conversation: {
           _id: conversation._id,
           type: "group",
           name: conversation.name,
+          description: conversation.description,
           avatar: conversation.avatar,
           createdBy: conversation.createdBy,
           admins: conversation.admins,
@@ -154,6 +157,7 @@ exports.createGroup = async (req, res) => {
       _id: conversation._id,
       type: "group",
       name: conversation.name,
+      description: conversation.description,
       avatar: conversation.avatar,
       createdBy: conversation.createdBy,
       admins: conversation.admins,
@@ -168,7 +172,6 @@ exports.createGroup = async (req, res) => {
     });
   } catch (err) {
     console.error("createGroup error:", err.message);
-    // Surface pre-validate hook errors (e.g. < 3 participants) as 400
     if (err.message.includes("Group conversations")) {
       return res.status(400).json({ message: err.message });
     }
@@ -223,6 +226,7 @@ exports.getConversationDetails = async (req, res) => {
       _id: conversation._id,
       type: "group",
       name: conversation.name,
+      description: conversation.description,
       avatar: conversation.avatar,
       createdBy: conversation.createdBy,
       admins: conversation.admins,
@@ -248,25 +252,39 @@ exports.getConversationDetails = async (req, res) => {
 // ---------------------------------------------------------------------------
 exports.updateGroupInfo = async (req, res) => {
   try {
-    const { name, avatar } = req.body;
-    const conversation = req.conversation; // attached by loadConversation middleware
+    let { name, description, avatar } = req.body;
+    const conversation = req.conversation;
 
-    if (!name && avatar === undefined) {
-      return res
-        .status(400)
-        .json({ message: "Provide name and/or avatar to update" });
+    if (!name && avatar === undefined && description === undefined) {
+      return res.status(400).json({
+        message: "Provide name, description, and/or avatar to update",
+      });
     }
 
     if (name !== undefined) {
-      if (!name.trim()) {
+      if (typeof name !== "string" || !name.trim()) {
         return res.status(400).json({ message: "Group name cannot be empty" });
       }
+
       if (name.trim().length > 100) {
         return res
           .status(400)
           .json({ message: "Group name must be 100 characters or fewer" });
       }
+
       conversation.name = name.trim();
+    }
+
+    if (description !== undefined) {
+      description = sanitizeDescription(description); // ✅ FIXED
+
+      if (description.length > 500) {
+        return res
+          .status(400)
+          .json({ message: "Description must be 500 characters or fewer" });
+      }
+
+      conversation.description = description;
     }
 
     if (avatar !== undefined) {
@@ -275,20 +293,34 @@ exports.updateGroupInfo = async (req, res) => {
 
     await conversation.save();
 
-    // Notify all group members in real-time
+    await conversation.populate([
+      { path: "participants", select: "name avatar email" },
+      { path: "admins", select: "name avatar" },
+      { path: "createdBy", select: "name avatar" },
+    ]);
+
     const io = req.app.get("io");
     if (io) {
       io.to(`conv:${conversation._id}`).emit("group:updated", {
         conversationId: conversation._id,
         name: conversation.name,
+        description: conversation.description,
         avatar: conversation.avatar,
       });
     }
 
     res.json({
-      message: "Group updated successfully",
+      _id: conversation._id,
+      type: conversation.type,
       name: conversation.name,
+      description: conversation.description,
       avatar: conversation.avatar,
+      createdBy: conversation.createdBy,
+      admins: conversation.admins,
+      participants: conversation.participants,
+      lastMessage: conversation.lastMessage,
+      updatedAt: conversation.updatedAt,
+      createdAt: conversation.createdAt,
     });
   } catch (err) {
     console.error("updateGroupInfo error:", err.message);
@@ -416,9 +448,24 @@ exports.addMembers = async (req, res) => {
       });
     }
 
+    // Fetch the updated conversation with populated fields
+    const updatedConversation = await Conversation.findById(conversation._id)
+      .populate("participants", "name avatar email")
+      .populate("admins", "name avatar")
+      .populate("createdBy", "name avatar");
+
     res.json({
-      message: `${toAdd.length} member(s) added successfully`,
-      addedMembers: foundUsers,
+      _id: updatedConversation._id,
+      type: "group",
+      name: updatedConversation.name,
+      description: updatedConversation.description,
+      avatar: updatedConversation.avatar,
+      createdBy: updatedConversation.createdBy,
+      admins: updatedConversation.admins,
+      participants: updatedConversation.participants,
+      lastMessage: updatedConversation.lastMessage,
+      updatedAt: updatedConversation.updatedAt,
+      createdAt: updatedConversation.createdAt,
     });
   } catch (err) {
     console.error("addMembers error:", err.message);
@@ -514,9 +561,24 @@ exports.removeMembers = async (req, res) => {
       }
     }
 
+    // Fetch the updated conversation with populated fields
+    const updatedConversation = await Conversation.findById(conversation._id)
+      .populate("participants", "name avatar email")
+      .populate("admins", "name avatar")
+      .populate("createdBy", "name avatar");
+
     res.json({
-      message: `${validTargets.length} member(s) removed successfully`,
-      removedUserIds: validTargets,
+      _id: updatedConversation._id,
+      type: "group",
+      name: updatedConversation.name,
+      description: updatedConversation.description,
+      avatar: updatedConversation.avatar,
+      createdBy: updatedConversation.createdBy,
+      admins: updatedConversation.admins,
+      participants: updatedConversation.participants,
+      lastMessage: updatedConversation.lastMessage,
+      updatedAt: updatedConversation.updatedAt,
+      createdAt: updatedConversation.createdAt,
     });
   } catch (err) {
     console.error("removeMembers error:", err.message);
@@ -564,7 +626,25 @@ exports.promoteToAdmin = async (req, res) => {
       });
     }
 
-    res.json({ message: "User promoted to admin successfully" });
+    // Fetch the updated conversation with populated fields
+    const updatedConversation = await Conversation.findById(conversation._id)
+      .populate("participants", "name avatar email")
+      .populate("admins", "name avatar")
+      .populate("createdBy", "name avatar");
+
+    res.json({
+      _id: updatedConversation._id,
+      type: "group",
+      name: updatedConversation.name,
+      description: updatedConversation.description,
+      avatar: updatedConversation.avatar,
+      createdBy: updatedConversation.createdBy,
+      admins: updatedConversation.admins,
+      participants: updatedConversation.participants,
+      lastMessage: updatedConversation.lastMessage,
+      updatedAt: updatedConversation.updatedAt,
+      createdAt: updatedConversation.createdAt,
+    });
   } catch (err) {
     console.error("promoteToAdmin error:", err.message);
     res.status(500).json({ message: "Server error" });
@@ -612,7 +692,25 @@ exports.demoteAdmin = async (req, res) => {
       });
     }
 
-    res.json({ message: "Admin demoted successfully" });
+    // Fetch the updated conversation with populated fields
+    const updatedConversation = await Conversation.findById(conversation._id)
+      .populate("participants", "name avatar email")
+      .populate("admins", "name avatar")
+      .populate("createdBy", "name avatar");
+
+    res.json({
+      _id: updatedConversation._id,
+      type: "group",
+      name: updatedConversation.name,
+      description: updatedConversation.description,
+      avatar: updatedConversation.avatar,
+      createdBy: updatedConversation.createdBy,
+      admins: updatedConversation.admins,
+      participants: updatedConversation.participants,
+      lastMessage: updatedConversation.lastMessage,
+      updatedAt: updatedConversation.updatedAt,
+      createdAt: updatedConversation.createdAt,
+    });
   } catch (err) {
     console.error("demoteAdmin error:", err.message);
     res.status(500).json({ message: "Server error" });
