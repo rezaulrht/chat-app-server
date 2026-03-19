@@ -504,6 +504,33 @@ exports.deletePost = async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/feed/users/:id/follow
+// GET /api/feed/users/:id/followers
+exports.getFollowers = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id))
+      return res.status(400).json({ message: "Invalid user ID" });
+
+    const user = await User.findById(id)
+      .select("followers")
+      .populate({ path: "followers", select: "name avatar reputation" });
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const followers = (user.followers || []).map((f) => ({
+      _id: f._id,
+      name: f.name,
+      avatar: f.avatar,
+      reputation: f.reputation ?? 0,
+    }));
+
+    return res.json({ followers, total: followers.length });
+  } catch (err) {
+    console.error("getFollowers error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
 // Toggle follow / unfollow. Returns { following: Boolean }
 // ---------------------------------------------------------------------------
 exports.followUser = async (req, res) => {
