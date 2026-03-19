@@ -152,7 +152,6 @@ const postSchema = new mongoose.Schema(
         validator: (value) => Array.isArray(value) && value.length <= 5,
         message: "A post can have at most 5 tags",
       },
-      index: true,
     },
 
     isPrivate: {
@@ -170,7 +169,6 @@ const postSchema = new mongoose.Schema(
       type: String,
       enum: ["open", "resolved"],
       default: "open",
-      index: true,
     },
 
     codeBlocks: {
