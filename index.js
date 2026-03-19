@@ -21,6 +21,7 @@ const pollRoutes = require("./src/routes/poll.routes");
 const readReceiptRoutes = require("./src/routes/readReceipt.routes");
 const feedUserRoutes = require("./src/routes/feed.users.routes");
 const uploadRoutes = require("./src/routes/upload.routes");
+const callRoutes = require("./src/routes/calls.routes");
 const mongoose = require("mongoose");
 
 const port = process.env.PORT || 3000;
@@ -75,6 +76,9 @@ app.use("/api/messages", scheduleRoutes);
 
 // Upload (R2 presign)
 app.use("/api/upload", uploadRoutes);
+
+// Call Routes
+app.use("/api/calls", callRoutes);
 
 // Health check for Deployment (UptimeRobot/Heartbeat)
 app.get("/health", (req, res) => {
