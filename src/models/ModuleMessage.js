@@ -57,6 +57,13 @@ const moduleMessageSchema = new mongoose.Schema(
         size: { type: Number },
       },
     ],
+    //  NEW: Mentions
+    mentions: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
     //  NEW: Pinning Logic
     isPinned: {
       type: Boolean,

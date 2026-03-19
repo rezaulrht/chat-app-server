@@ -10,6 +10,9 @@ const {
   deleteModule,
   reorderModule,
   getModuleMessages,
+  getThreadMessages,
+  getPinnedMessages,
+  searchModuleMessages,
   sendModuleMessage,
   markModuleSeen,
   editModuleMessage,
@@ -61,6 +64,22 @@ router.patch("/:moduleId/position", reorderModule);
 // @query   page (default 1), limit (default 30)
 // @access  Workspace members (+ private module check)
 router.get("/:moduleId/messages", getModuleMessages);
+
+// @route   GET /api/workspaces/:workspaceId/modules/:moduleId/messages/:msgId/thread
+// @desc    Get thread replies for a message
+// @access  Workspace members 
+router.get("/:moduleId/messages/:msgId/thread", getThreadMessages);
+
+// @route   GET /api/workspaces/:workspaceId/modules/:moduleId/pinned
+// @desc    Get pinned messages for a module
+// @access  Workspace members 
+router.get("/:moduleId/pinned", getPinnedMessages);
+
+// @route   GET /api/workspaces/:workspaceId/modules/:moduleId/search
+// @desc    Search for messages in a module based on text content
+// @query   q (search snippet)
+// @access  Workspace members
+router.get("/:moduleId/search", searchModuleMessages);
 
 // @route   POST /api/workspaces/:workspaceId/modules/:moduleId/messages
 // @desc    Send a message in a module
