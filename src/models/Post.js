@@ -119,7 +119,15 @@ const postSchema = new mongoose.Schema(
 
     type: {
       type: String,
-      enum: ["post", "question", "til", "snippet", "showcase", "poll", "resource"],
+      enum: [
+        "post",
+        "question",
+        "til",
+        "snippet",
+        "showcase",
+        "poll",
+        "resource",
+      ],
       required: true,
       index: true,
     },
@@ -258,11 +266,17 @@ const postSchema = new mongoose.Schema(
 postSchema.pre("validate", function () {
   const requiresTitle = ["post", "question", "snippet", "showcase", "resource"];
 
-  if (requiresTitle.includes(this.type) && (!this.title || !this.title.trim())) {
+  if (
+    requiresTitle.includes(this.type) &&
+    (!this.title || !this.title.trim())
+  ) {
     throw new Error("Title is required for this post type");
   }
 
-  if (["post", "question", "til"].includes(this.type) && (!this.content || !this.content.trim())) {
+  if (
+    ["post", "question", "til"].includes(this.type) &&
+    (!this.content || !this.content.trim())
+  ) {
     throw new Error("Content is required for this post type");
   }
 
@@ -271,7 +285,9 @@ postSchema.pre("validate", function () {
       throw new Error("Snippet posts require at least one code block");
     }
 
-    const hasEmptyCode = this.codeBlocks.some((item) => !item.code || !item.code.trim());
+    const hasEmptyCode = this.codeBlocks.some(
+      (item) => !item.code || !item.code.trim(),
+    );
     if (hasEmptyCode) {
       throw new Error("Snippet code block cannot be empty");
     }
@@ -288,7 +304,9 @@ postSchema.pre("validate", function () {
       throw new Error("Poll must include between 2 and 6 options");
     }
 
-    const invalidOption = options.some((option) => !option.text || !option.text.trim());
+    const invalidOption = options.some(
+      (option) => !option.text || !option.text.trim(),
+    );
     if (invalidOption) {
       throw new Error("Poll options cannot be empty");
     }
@@ -313,6 +331,9 @@ postSchema.index({ isPrivate: 1, createdAt: -1 });
 postSchema.index({ reactionCount: -1, createdAt: -1 });
 postSchema.index({ title: "text", content: "text", tags: "text" });
 // Partial index on acceptedComment to exclude nulls
-postSchema.index({ acceptedComment: 1 }, { partialFilterExpression: { acceptedComment: { $ne: null } } });
+postSchema.index(
+  { acceptedComment: 1 },
+  { partialFilterExpression: { acceptedComment: { $ne: null } } },
+);
 
 module.exports = mongoose.model("Post", postSchema);

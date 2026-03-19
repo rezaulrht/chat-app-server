@@ -7,6 +7,7 @@ const {
   getUserProfile,
   getUserPosts,
   getTopContributors,
+  getFollowers,
 } = require("../controllers/feed.controller");
 
 // All routes require authentication
@@ -35,5 +36,6 @@ router.get("/:id/posts", getUserPosts);
 // @desc    Toggle follow / unfollow a user
 // @access  Authenticated
 router.post("/:id/follow", followUser);
+router.get("/:id/followers", getFollowers);
 
 module.exports = router;

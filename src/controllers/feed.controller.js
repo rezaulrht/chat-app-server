@@ -22,7 +22,12 @@ const VALID_TYPES = [
 
 const SORT_PRESETS = {
   latest: { isPinned: -1, createdAt: -1 },
-  trending: { isPinned: -1, reactionCount: -1, commentsCount: -1, createdAt: -1 },
+  trending: {
+    isPinned: -1,
+    reactionCount: -1,
+    commentsCount: -1,
+    createdAt: -1,
+  },
   top: { reactionCount: -1, commentsCount: -1, createdAt: -1 },
   oldest: { createdAt: 1 },
 };
@@ -71,7 +76,9 @@ const checkPostAccess = async (postId, userId) => {
 
   const isOwner = post.author?.toString?.() === userId;
   if (post.isPrivate && !isOwner) {
-    return { error: { status: 403, message: "Not authorized to access this post" } };
+    return {
+      error: { status: 403, message: "Not authorized to access this post" },
+    };
   }
 
   return { post };
@@ -83,8 +90,8 @@ const normalizeTags = (tags) => {
   const source = Array.isArray(tags)
     ? tags
     : String(tags)
-      .split(",")
-      .map((tag) => tag.trim());
+        .split(",")
+        .map((tag) => tag.trim());
 
   const deduped = [];
   const seen = new Set();
@@ -175,23 +182,25 @@ const normalizePoll = (poll, existingPoll = null) => {
 
   const options = Array.isArray(poll.options)
     ? poll.options
-      .map((option) => {
-        if (typeof option === "string") {
-          return { text: option.trim(), votes: [] };
-        }
-        const text = String(option?.text || "").trim();
-        // Preserve votes from existingPoll if available, otherwise initialize to []
-        let votes = [];
-        if (existingPoll && Array.isArray(existingPoll.options)) {
-          const existing = existingPoll.options.find((opt) => opt.text === text);
-          if (existing && Array.isArray(existing.votes)) {
-            votes = existing.votes;
+        .map((option) => {
+          if (typeof option === "string") {
+            return { text: option.trim(), votes: [] };
           }
-        }
-        return { text, votes };
-      })
-      .filter((option) => option.text)
-      .slice(0, 6)
+          const text = String(option?.text || "").trim();
+          // Preserve votes from existingPoll if available, otherwise initialize to []
+          let votes = [];
+          if (existingPoll && Array.isArray(existingPoll.options)) {
+            const existing = existingPoll.options.find(
+              (opt) => opt.text === text,
+            );
+            if (existing && Array.isArray(existing.votes)) {
+              votes = existing.votes;
+            }
+          }
+          return { text, votes };
+        })
+        .filter((option) => option.text)
+        .slice(0, 6)
     : [];
 
   const duration = poll.duration ? String(poll.duration).trim() : "7 Days";
@@ -321,9 +330,7 @@ exports.getPosts = async (req, res) => {
 
     const effectiveSort = getEffectiveSort(tab, sort);
 
-    const projection = q
-      ? { score: { $meta: "textScore" } }
-      : null;
+    const projection = q ? { score: { $meta: "textScore" } } : null;
 
     const sortWithText = q
       ? { score: { $meta: "textScore" }, ...effectiveSort }
@@ -497,6 +504,33 @@ exports.deletePost = async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/feed/users/:id/follow
+// GET /api/feed/users/:id/followers
+exports.getFollowers = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id))
+      return res.status(400).json({ message: "Invalid user ID" });
+
+    const user = await User.findById(id)
+      .select("followers")
+      .populate({ path: "followers", select: "name avatar reputation" });
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const followers = (user.followers || []).map((f) => ({
+      _id: f._id,
+      name: f.name,
+      avatar: f.avatar,
+      reputation: f.reputation ?? 0,
+    }));
+
+    return res.json({ followers, total: followers.length });
+  } catch (err) {
+    console.error("getFollowers error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
 // Toggle follow / unfollow. Returns { following: Boolean }
 // ---------------------------------------------------------------------------
 exports.followUser = async (req, res) => {
@@ -691,7 +725,9 @@ exports.reactToPost = async (req, res) => {
     // Check post access (privacy/ownership)
     const access = await checkPostAccess(id, userId);
     if (access.error) {
-      return res.status(access.error.status).json({ message: access.error.message });
+      return res
+        .status(access.error.status)
+        .json({ message: access.error.message });
     }
     const post = access.post;
     // Reload post with full data for reactions
@@ -739,7 +775,11 @@ exports.reactToPost = async (req, res) => {
           : FEED_REPUTATION.POST_REACTION;
         // Aggregation-pipeline update ensures reputation never falls below 0
         await User.findByIdAndUpdate(fullPost.author, [
-          { $set: { reputation: { $max: [0, { $add: ["$reputation", repDelta] }] } } },
+          {
+            $set: {
+              reputation: { $max: [0, { $add: ["$reputation", repDelta] }] },
+            },
+          },
         ]);
       } catch (repErr) {
         console.warn(
@@ -771,7 +811,9 @@ exports.getComments = async (req, res) => {
     // Check post access (privacy/ownership)
     const access = await checkPostAccess(postId, userId);
     if (access.error) {
-      return res.status(access.error.status).json({ message: access.error.message });
+      return res
+        .status(access.error.status)
+        .json({ message: access.error.message });
     }
 
     const page = clampInt(req.query.page, 1, 1, 100000);
@@ -839,7 +881,9 @@ exports.createComment = async (req, res) => {
     // Check post access (privacy/ownership)
     const access = await checkPostAccess(postId, userId);
     if (access.error) {
-      return res.status(access.error.status).json({ message: access.error.message });
+      return res
+        .status(access.error.status)
+        .json({ message: access.error.message });
     }
     const post = access.post;
 
@@ -861,7 +905,9 @@ exports.createComment = async (req, res) => {
         return res.status(404).json({ message: "Parent comment not found" });
       }
       if (parentComment.parentComment) {
-        return res.status(400).json({ message: "Only 1-level replies are allowed" });
+        return res
+          .status(400)
+          .json({ message: "Only 1-level replies are allowed" });
       }
     }
 
@@ -957,19 +1003,25 @@ exports.deleteComment = async (req, res) => {
 
     // Load post to check/unwind acceptedComment state
     const post = await Post.findById(comment.post).select(
-      "acceptedComment status author"
+      "acceptedComment status author",
     );
     if (!post) return res.status(404).json({ message: "Post not found" });
 
     // Check if deleting comment is the accepted answer and unwind it
     const deleteFilter = { $or: [{ _id: id }, { parentComment: id }] };
-    const allToDelete = await Comment.find(deleteFilter).select("_id author isAccepted");
+    const allToDelete = await Comment.find(deleteFilter).select(
+      "_id author isAccepted",
+    );
     const deleteIds = new Set(allToDelete.map((c) => c._id.toString()));
-    const isAcceptedBeingDeleted = allToDelete.some((c) => String(c._id) === String(post.acceptedComment));
+    const isAcceptedBeingDeleted = allToDelete.some(
+      (c) => String(c._id) === String(post.acceptedComment),
+    );
 
     if (isAcceptedBeingDeleted && post.acceptedComment) {
       // Unwind accepted answer state
-      const acceptedAuthor = await Comment.findById(post.acceptedComment).select("author");
+      const acceptedAuthor = await Comment.findById(
+        post.acceptedComment,
+      ).select("author");
       if (acceptedAuthor) {
         await User.findByIdAndUpdate(acceptedAuthor.author, {
           $inc: { reputation: -FEED_REPUTATION.ACCEPTED_ANSWER },
@@ -988,7 +1040,9 @@ exports.deleteComment = async (req, res) => {
     const deletedCount = Math.max(1, toDelete);
 
     // Recompute from source of truth to avoid drift and pipeline compatibility issues.
-    const remainingComments = await Comment.countDocuments({ post: comment.post });
+    const remainingComments = await Comment.countDocuments({
+      post: comment.post,
+    });
     const updatedPost = await Post.findByIdAndUpdate(
       comment.post,
       { $set: { commentsCount: Math.max(0, remainingComments) } },
@@ -997,12 +1051,18 @@ exports.deleteComment = async (req, res) => {
 
     try {
       const io = getIo(req);
-      io.to(`feed:post:${comment.post.toString()}`).emit("feed:comment:deleted", {
-        commentId: id,
-        postId: comment.post,
-      });
+      io.to(`feed:post:${comment.post.toString()}`).emit(
+        "feed:comment:deleted",
+        {
+          commentId: id,
+          postId: comment.post,
+        },
+      );
     } catch (socketErr) {
-      console.warn("deleteComment socket emit failed (non-fatal):", socketErr.message);
+      console.warn(
+        "deleteComment socket emit failed (non-fatal):",
+        socketErr.message,
+      );
     }
 
     return res.json({
@@ -1039,7 +1099,9 @@ exports.reactToComment = async (req, res) => {
     // Check post access (privacy/ownership) before allowing reaction
     const access = await checkPostAccess(comment.post, userId);
     if (access.error) {
-      return res.status(access.error.status).json({ message: access.error.message });
+      return res
+        .status(access.error.status)
+        .json({ message: access.error.message });
     }
 
     const reactions = comment.reactions || new Map();
@@ -1068,7 +1130,11 @@ exports.reactToComment = async (req, res) => {
           : FEED_REPUTATION.COMMENT_REACTION;
         // Aggregation-pipeline update ensures reputation never falls below 0
         await User.findByIdAndUpdate(comment.author, [
-          { $set: { reputation: { $max: [0, { $add: ["$reputation", repDelta] }] } } },
+          {
+            $set: {
+              reputation: { $max: [0, { $add: ["$reputation", repDelta] }] },
+            },
+          },
         ]);
       } catch (repErr) {
         console.warn(
@@ -1107,7 +1173,10 @@ exports.toggleAcceptedAnswer = async (req, res) => {
     const userId = req.user.id;
     const { postId, commentId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(postId) || !mongoose.Types.ObjectId.isValid(commentId)) {
+    if (
+      !mongoose.Types.ObjectId.isValid(postId) ||
+      !mongoose.Types.ObjectId.isValid(commentId)
+    ) {
       return res.status(400).json({ message: "Invalid ID" });
     }
 
@@ -1125,21 +1194,43 @@ exports.toggleAcceptedAnswer = async (req, res) => {
       }
       if (post.type !== "question") {
         await session.abortTransaction();
-        return res.status(400).json({ message: "Accepted answers are only for questions" });
+        return res
+          .status(400)
+          .json({ message: "Accepted answers are only for questions" });
       }
       if (post.author.toString() !== userId) {
         await session.abortTransaction();
-        return res.status(403).json({ message: "Only question author can accept answers" });
+        return res
+          .status(403)
+          .json({ message: "Only question author can accept answers" });
       }
 
-      const previouslyAcceptedId = post.acceptedComment ? post.acceptedComment.toString() : null;
+      const previouslyAcceptedId = post.acceptedComment
+        ? post.acceptedComment.toString()
+        : null;
 
       // Toggle off when selecting the currently accepted comment
       if (previouslyAcceptedId === commentId) {
-        await Comment.findByIdAndUpdate(commentId, { isAccepted: false }).session(session);
-        await Post.findByIdAndUpdate(postId, { acceptedComment: null, status: "open" }).session(session);
+        await Comment.findByIdAndUpdate(commentId, {
+          isAccepted: false,
+        }).session(session);
+        await Post.findByIdAndUpdate(postId, {
+          acceptedComment: null,
+          status: "open",
+        }).session(session);
         await User.findByIdAndUpdate(comment.author, [
-          { $set: { reputation: { $max: [0, { $subtract: ["$reputation", FEED_REPUTATION.ACCEPTED_ANSWER] }] } } },
+          {
+            $set: {
+              reputation: {
+                $max: [
+                  0,
+                  {
+                    $subtract: ["$reputation", FEED_REPUTATION.ACCEPTED_ANSWER],
+                  },
+                ],
+              },
+            },
+          },
         ]).session(session);
 
         await session.commitTransaction();
@@ -1160,16 +1251,41 @@ exports.toggleAcceptedAnswer = async (req, res) => {
         ).session(session);
         if (previousComment) {
           await User.findByIdAndUpdate(previousComment.author, [
-            { $set: { reputation: { $max: [0, { $subtract: ["$reputation", FEED_REPUTATION.ACCEPTED_ANSWER] }] } } },
+            {
+              $set: {
+                reputation: {
+                  $max: [
+                    0,
+                    {
+                      $subtract: [
+                        "$reputation",
+                        FEED_REPUTATION.ACCEPTED_ANSWER,
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
           ]).session(session);
         }
       }
 
       // Set new accepted answer
-      await Comment.findByIdAndUpdate(commentId, { isAccepted: true }).session(session);
-      await Post.findByIdAndUpdate(postId, { acceptedComment: commentId, status: "resolved" }).session(session);
+      await Comment.findByIdAndUpdate(commentId, { isAccepted: true }).session(
+        session,
+      );
+      await Post.findByIdAndUpdate(postId, {
+        acceptedComment: commentId,
+        status: "resolved",
+      }).session(session);
       await User.findByIdAndUpdate(comment.author, [
-        { $set: { reputation: { $add: ["$reputation", FEED_REPUTATION.ACCEPTED_ANSWER] } } },
+        {
+          $set: {
+            reputation: {
+              $add: ["$reputation", FEED_REPUTATION.ACCEPTED_ANSWER],
+            },
+          },
+        },
       ]).session(session);
 
       await session.commitTransaction();
@@ -1206,7 +1322,9 @@ exports.votePoll = async (req, res) => {
     // Check post access (privacy/ownership)
     const access = await checkPostAccess(id, userId);
     if (access.error) {
-      return res.status(access.error.status).json({ message: access.error.message });
+      return res
+        .status(access.error.status)
+        .json({ message: access.error.message });
     }
     const post = access.post;
     // Reload post with poll data
@@ -1217,7 +1335,9 @@ exports.votePoll = async (req, res) => {
     Object.assign(post, fullPost.toObject());
 
     if (!Number.isInteger(optionIndex)) {
-      return res.status(400).json({ message: "optionIndex must be an integer" });
+      return res
+        .status(400)
+        .json({ message: "optionIndex must be an integer" });
     }
     if (optionIndex < 0 || optionIndex >= post.poll.options.length) {
       return res.status(400).json({ message: "Invalid poll option" });
@@ -1239,7 +1359,9 @@ exports.votePoll = async (req, res) => {
     const targetVotes = options[optionIndex].votes;
     const hasVoted = targetVotes.some((v) => v.toString() === uid);
     if (hasVoted) {
-      options[optionIndex].votes = targetVotes.filter((v) => v.toString() !== uid);
+      options[optionIndex].votes = targetVotes.filter(
+        (v) => v.toString() !== uid,
+      );
     } else {
       options[optionIndex].votes.push(userId);
     }
@@ -1265,7 +1387,9 @@ exports.votePoll = async (req, res) => {
 exports.followTag = async (req, res) => {
   try {
     const userId = req.user.id;
-    const rawTag = String(req.params.tag || "").trim().toLowerCase();
+    const rawTag = String(req.params.tag || "")
+      .trim()
+      .toLowerCase();
     if (!rawTag) return res.status(400).json({ message: "Tag is required" });
 
     const me = await User.findById(userId).select("followedTags");
@@ -1320,11 +1444,7 @@ exports.getTrendingTags = async (req, res) => {
       {
         $addFields: {
           score: {
-            $add: [
-              "$posts",
-              { $multiply: ["$reactions", 2] },
-              "$comments",
-            ],
+            $add: ["$posts", { $multiply: ["$reactions", 2] }, "$comments"],
           },
         },
       },
@@ -1363,7 +1483,9 @@ exports.searchFeed = async (req, res) => {
     const q = req.query.q ? String(req.query.q).trim() : "";
     const type = req.query.type ? String(req.query.type).toLowerCase() : "all";
     const tags = normalizeTags(req.query.tags);
-    const sort = req.query.sort ? String(req.query.sort).toLowerCase() : "latest";
+    const sort = req.query.sort
+      ? String(req.query.sort).toLowerCase()
+      : "latest";
 
     const filter = { $or: [{ isPrivate: false }, { author: userId }] };
 
@@ -1374,14 +1496,29 @@ exports.searchFeed = async (req, res) => {
       filter.tags = { $in: tags };
     }
     if (q) {
-      filter.$text = { $search: q };
+      // Split into words and match each word as a prefix (word-by-word partial match)
+      const words = q.trim().split(/\s+/).filter(Boolean);
+      const wordConditions = words.map((word) => {
+        const regex = new RegExp(word, "i");
+        return {
+          $or: [
+            { title: { $regex: regex } },
+            { content: { $regex: regex } },
+            { tags: { $regex: regex } },
+          ],
+        };
+      });
+      // All words must match (AND logic)
+      if (wordConditions.length === 1) {
+        Object.assign(filter, wordConditions[0]);
+      } else {
+        filter.$and = wordConditions;
+      }
     }
 
-    const projection = q ? { score: { $meta: "textScore" } } : null;
+    const projection = null;
     const sortPreset = SORT_PRESETS[sort] || SORT_PRESETS.latest;
-    const sorting = q
-      ? { score: { $meta: "textScore" }, ...sortPreset }
-      : sortPreset;
+    const sorting = sortPreset;
 
     const [posts, total] = await Promise.all([
       Post.find(filter, projection)
