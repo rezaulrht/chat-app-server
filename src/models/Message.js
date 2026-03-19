@@ -169,6 +169,14 @@ const messageSchema = new mongoose.Schema(
         },
       },
     },
+    // Call Log Data
+    callLog: {
+      callType: { type: String, enum: ["audio", "video"] },
+      duration: Number, // seconds
+      status: { type: String, enum: ["ended", "missed", "declined"] },
+      initiator: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      participants: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    },
   },
   { timestamps: true },
 );
