@@ -160,7 +160,7 @@ const postSchema = new mongoose.Schema(
         validator: (value) => Array.isArray(value) && value.length <= 5,
         message: "A post can have at most 5 tags",
       },
-      // removed index: true here — defined below in schema.index()
+      index: true,
     },
 
     isPrivate: {
@@ -178,7 +178,7 @@ const postSchema = new mongoose.Schema(
       type: String,
       enum: ["open", "resolved"],
       default: "open",
-      // removed index: true here — defined below in schema.index()
+      index: true,
     },
 
     codeBlocks: {
@@ -329,9 +329,8 @@ postSchema.index({ createdAt: -1 });
 postSchema.index({ type: 1, createdAt: -1 });
 postSchema.index({ isPrivate: 1, createdAt: -1 });
 postSchema.index({ reactionCount: -1, createdAt: -1 });
-postSchema.index({ tags: 1 }); // single source of truth for tags index
-postSchema.index({ status: 1 }); // single source of truth for status index
 postSchema.index({ title: "text", content: "text", tags: "text" });
+// Partial index on acceptedComment to exclude nulls
 postSchema.index(
   { acceptedComment: 1 },
   { partialFilterExpression: { acceptedComment: { $ne: null } } },
