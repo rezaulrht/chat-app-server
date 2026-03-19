@@ -983,6 +983,7 @@ exports.createRole = async (req, res) => {
       name: trimmedName,
       color: color || "#5b5b8f",
       permissions: permissions || [],
+      isHoisted: isHoisted || false,
     };
 
     const updated = await Workspace.findByIdAndUpdate(
@@ -1013,7 +1014,7 @@ exports.updateRole = async (req, res) => {
   try {
     const workspace = req.workspace;
     const { roleId } = req.params;
-    const { name, color, permissions } = req.body;
+    const { name, color, permissions, isHoisted } = req.body;
 
     const role = workspace.roles?.id(roleId);
     if (!role) {
@@ -1034,6 +1035,7 @@ exports.updateRole = async (req, res) => {
     }
     if (color !== undefined) updateFields["roles.$[r].color"] = color;
     if (permissions !== undefined) updateFields["roles.$[r].permissions"] = permissions;
+    if (isHoisted !== undefined) updateFields["roles.$[r].isHoisted"] = isHoisted;
 
     const updated = await Workspace.findByIdAndUpdate(
       workspace._id,
