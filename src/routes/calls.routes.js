@@ -63,12 +63,12 @@ router.post("/token", async (req, res) => {
       return res.status(400).json({ error: "roomName required" });
     }
 
-    const user = await User.findById(req.user.id).select("name");
+    const user = await User.findById(req.user.id).select("name avatar");
     // Identity must be unique per room — use userId so two users with same name don't collide
     const identity = req.user.id;
 
     console.log(`[LiveKit token] room=${roomName} identity=${identity} name=${user?.name}`);
-    const token = await generateLiveKitToken(roomName, identity, { callType, name: user?.name });
+    const token = await generateLiveKitToken(roomName, identity, { callType, name: user?.name, avatar: user?.avatar || "" });
 
     res.json({ token, url: process.env.LIVEKIT_URL });
   } catch (error) {

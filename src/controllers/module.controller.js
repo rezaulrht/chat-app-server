@@ -160,12 +160,12 @@ exports.createModule = async (req, res) => {
     }
 
     // ── 4. Validate type ─────────────────────────────────────────
-    const validTypes = ["text", "announcement"];
+    const validTypes = ["text", "announcement", "voice"];
     const moduleType = type || "text";
     if (!validTypes.includes(moduleType)) {
       return res
         .status(400)
-        .json({ message: "Type must be 'text' or 'announcement'" });
+        .json({ message: "Type must be 'text', 'announcement', or 'voice'" });
     }
 
     // ── 5. Validate category ─────────────────────────────────────
@@ -381,11 +381,11 @@ exports.updateModule = async (req, res) => {
     }
 
     if (type !== undefined) {
-      const validTypes = ["text", "announcement"];
+      const validTypes = ["text", "announcement", "voice"];
       if (!validTypes.includes(type)) {
         return res
           .status(400)
-          .json({ message: "Type must be 'text' or 'announcement'" });
+          .json({ message: "Type must be 'text', 'announcement', or 'voice'" });
       }
       module.type = type;
       changes.type = type;
