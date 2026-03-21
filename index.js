@@ -22,6 +22,7 @@ const readReceiptRoutes = require("./src/routes/readReceipt.routes");
 const feedUserRoutes = require("./src/routes/feed.users.routes");
 const uploadRoutes = require("./src/routes/upload.routes");
 const callRoutes = require("./src/routes/calls.routes");
+const wordspyRoutes = require("./src/routes/WordSpy/wordspy.routes");
 const mongoose = require("mongoose");
 
 const port = process.env.PORT || 3000;
@@ -79,6 +80,9 @@ app.use("/api/upload", uploadRoutes);
 
 // Call Routes
 app.use("/api/calls", callRoutes);
+
+// Word Spy Routes
+app.use("/api/wordspy", wordspyRoutes);
 
 // Health check for Deployment (UptimeRobot/Heartbeat)
 app.get("/health", (req, res) => {
