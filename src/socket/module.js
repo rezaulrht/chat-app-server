@@ -98,7 +98,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
 
   socket.on(
     "module:message:send",
-    async ({ moduleId, workspaceId, text, gifUrl, tempId, replyTo, attachments }) => {
+    async ({ moduleId, workspaceId, text, gifUrl, tempId, replyTo, attachments, mentions }) => {
       if (!moduleId || (!text?.trim() && !gifUrl && (!attachments || attachments.length === 0))) return;
 
       try {
@@ -166,6 +166,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
           gifUrl: gifUrl || null,
           replyTo: replyTo || null,
           attachments: attachments || [],
+          mentions: mentions || [],
         });
 
         // ── Handle Thread Metadata Update ────────────────────────────
@@ -220,6 +221,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
           attachments: message.attachments,
           replyTo: message.replyTo || null,
           reactions: {},
+          mentions: message.mentions,
           isEdited: false,
           isDeleted: false,
           createdAt: message.createdAt,
@@ -227,6 +229,20 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
 
         // Broadcast to everyone in the module room (sender included)
         io.to(`module:${moduleId}`).emit("module:message:new", payload);
+
+        // If there are mentions, loop and emit badge increment or toast
+        if (mentions && mentions.length > 0) {
+          mentions.forEach((uid) => {
+            if (uid !== socket.userId) {
+              emitToUser(uid, "module:mention", {
+                moduleId,
+                workspaceId,
+                messageId: message._id,
+                sender: message.sender,
+              });
+            }
+          });
+        }
 
         // Send unread:update to each other member
         // Re-fetch module to get fresh unread counts
