@@ -100,10 +100,22 @@ router.post("/initiate", async (req, res) => {
       return res.status(404).json({ error: "Conversation not found" });
     }
 
-    // Prevent duplicate active calls on the same conversation
+    // Prevent duplicate active calls on the same conversation.
+    // If an active call is found but is older than 5 minutes, treat it as
+    // stale (caller dropped without a clean hangup) and mark it ended so
+    // a new call can proceed.
+    const STALE_CALL_MS = 5 * 60 * 1000;
     const existingCall = await CallLog.findOne({ conversationId, status: "active" });
     if (existingCall) {
-      return res.status(409).json({ error: "A call is already active in this conversation" });
+      const age = Date.now() - new Date(existingCall.startedAt).getTime();
+      if (age < STALE_CALL_MS) {
+        return res.status(409).json({ error: "A call is already active in this conversation" });
+      }
+      // Stale — close it out silently so the new call can start
+      existingCall.status = "ended";
+      existingCall.endedAt = new Date();
+      existingCall.duration = Math.floor(age / 1000);
+      await existingCall.save();
     }
 
     const initiator = await User.findById(initiatorId).select("name avatar");
