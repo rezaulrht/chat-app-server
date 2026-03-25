@@ -42,6 +42,13 @@ const memberSchema = new mongoose.Schema({
   nickname: { type: String, trim: true, maxlength: 50, default: null },
 });
 
+const bannedUserSchema = new mongoose.Schema({
+  user:     { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  bannedAt: { type: Date, default: Date.now },
+  bannedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  reason:   { type: String, trim: true, maxlength: 200, default: null },
+});
+
 // ── Main schema ──────────────────────────────────────────────────
 
 const workspaceSchema = new mongoose.Schema(
@@ -90,6 +97,9 @@ const workspaceSchema = new mongoose.Schema(
 
     // Embedded member list with roles
     members: [memberSchema],
+
+    // Banned users list
+    bannedUsers: [bannedUserSchema],
 
     // Embedded category list (ordered by position field)
     categories: [categorySchema],

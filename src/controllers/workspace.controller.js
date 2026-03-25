@@ -774,6 +774,14 @@ exports.joinViaInvite = async (req, res) => {
         .json({ message: "You are already a member of this workspace" });
     }
 
+    // Banned check
+    const isBannedInvite = workspace.bannedUsers.some(
+      (b) => b.user.toString() === userId.toString(),
+    );
+    if (isBannedInvite) {
+      return res.status(403).json({ message: "You are banned from this workspace." });
+    }
+
     // Member cap check
     if (workspace.members.length >= MAX_WORKSPACE_MEMBERS) {
       return res.status(400).json({
@@ -1163,6 +1171,14 @@ exports.joinPublicWorkspace = async (req, res) => {
       return res.status(400).json({ message: "You are already a member" });
     }
 
+    // Banned check
+    const isBannedPublic = workspace.bannedUsers.some(
+      (b) => b.user.toString() === userId.toString(),
+    );
+    if (isBannedPublic) {
+      return res.status(403).json({ message: "You are banned from this workspace." });
+    }
+
     if (workspace.members.length >= MAX_WORKSPACE_MEMBERS) {
       return res.status(400).json({
         message: `Workspace has reached the member limit (${MAX_WORKSPACE_MEMBERS})`,
@@ -1184,6 +1200,101 @@ exports.joinPublicWorkspace = async (req, res) => {
     res.status(200).json({ ...workspace.toObject(), myRole: "member" });
   } catch (err) {
     console.error("joinPublicWorkspace error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/workspaces/:workspaceId/bans
+// List all banned users with populated user data.
+// ---------------------------------------------------------------------------
+exports.getBannedUsers = async (req, res) => {
+  try {
+    const workspace = req.workspace;
+    await workspace.populate([
+      { path: "bannedUsers.user", select: "name avatar email" },
+      { path: "bannedUsers.bannedBy", select: "name avatar" },
+    ]);
+    res.json(workspace.bannedUsers);
+  } catch (err) {
+    console.error("getBannedUsers error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/workspaces/:workspaceId/members/:targetUserId/ban
+// Ban a member: adds to bannedUsers, removes from members.
+// Guards: cannot ban the owner; cannot self-ban.
+// ---------------------------------------------------------------------------
+exports.banMember = async (req, res) => {
+  try {
+    const workspace = req.workspace;
+    const wsId = workspace._id;
+    const requesterId = req.user.id;
+    const { targetUserId } = req.params;
+
+    const ownerRecord = workspace.members.find((m) => m.role === "owner");
+    const ownerId = ownerRecord?.user.toString();
+
+    if (targetUserId === ownerId) {
+      return res.status(400).json({ message: "The workspace owner cannot be banned" });
+    }
+    if (targetUserId === requesterId) {
+      return res.status(400).json({ message: "You cannot ban yourself" });
+    }
+
+    const alreadyBanned = workspace.bannedUsers.some(
+      (b) => b.user.toString() === targetUserId,
+    );
+    if (alreadyBanned) {
+      return res.status(400).json({ message: "User is already banned" });
+    }
+
+    await workspace.updateOne({
+      $push: { bannedUsers: { user: targetUserId, bannedBy: requesterId, reason: null } },
+      $pull: { members: { user: targetUserId } },
+    });
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`workspace:${wsId}`).emit("workspace:member-banned", {
+        workspaceId: wsId,
+        userId: targetUserId,
+        bannedBy: requesterId,
+      });
+    }
+
+    res.status(204).send();
+  } catch (err) {
+    console.error("banMember error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// DELETE /api/workspaces/:workspaceId/members/:targetUserId/ban
+// Unban a previously banned user.
+// ---------------------------------------------------------------------------
+exports.unbanMember = async (req, res) => {
+  try {
+    const workspace = req.workspace;
+    const { targetUserId } = req.params;
+
+    const isBanned = workspace.bannedUsers.some(
+      (b) => b.user.toString() === targetUserId,
+    );
+    if (!isBanned) {
+      return res.status(400).json({ message: "User is not banned" });
+    }
+
+    await workspace.updateOne({
+      $pull: { bannedUsers: { user: targetUserId } },
+    });
+
+    res.status(204).send();
+  } catch (err) {
+    console.error("unbanMember error:", err.message);
     res.status(500).json({ message: "Server error" });
   }
 };

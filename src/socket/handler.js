@@ -18,6 +18,7 @@ const registerModuleHandlers = require("./module");
 const registerFeedHandlers = require("./feed");
 const registerCallHandlers = require("./calls");
 const registerVoiceChannelHandlers = require("./voiceChannel");
+const registerWordSpyHandlers = require("./wordspy");
 
 const socketHandler = (io) => {
   const helpers = createHelpers(io);
@@ -37,6 +38,7 @@ const socketHandler = (io) => {
         return next(new Error("Authentication error: Invalid token claims"));
       }
       socket.userId = decoded.id;
+      socket.data.userId = decoded.id; // required for fetchSockets()-based targeting
       next();
     } catch (err) {
       return next(new Error("Authentication error: Invalid token"));
@@ -122,6 +124,7 @@ const socketHandler = (io) => {
     registerFeedHandlers(socket);
     registerCallHandlers(socket, { ...helpers, io });
     registerVoiceChannelHandlers(socket, { io });
+    const { handleDisconnect: wordSpyDisconnect } = registerWordSpyHandlers(socket, { ...helpers, io });
 
     // ----------------------------------------------------------------
     // Handle disconnection — clean up Redis mapping
@@ -134,6 +137,7 @@ const socketHandler = (io) => {
       cleanupPresence();
       await cleanupTyping();
       cleanupModules();
+      if (wordSpyDisconnect) await wordSpyDisconnect();
 
       if (getIsRedisConnected()) {
         try {
