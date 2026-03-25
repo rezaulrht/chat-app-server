@@ -35,6 +35,7 @@ const {
   getWorkspaceByInvite,
   banMember,
   unbanMember,
+  getBannedUsers,
 } = require("../controllers/workspace.controller");
 
 // All routes require authentication
@@ -279,6 +280,18 @@ router.patch(
 // @desc    Join a public workspace without an invite code
 // @access  Any authenticated user
 router.post("/:workspaceId/join-public", validateWorkspaceId, auth, joinPublicWorkspace);
+
+// @route   GET /api/workspaces/:workspaceId/bans
+// @desc    List all banned users in a workspace
+// @access  Workspace admins and owner
+router.get(
+  "/:workspaceId/bans",
+  validateWorkspaceId,
+  loadWorkspace,
+  isWorkspaceMember,
+  isWorkspaceAdmin,
+  getBannedUsers,
+);
 
 // @route   POST /api/workspaces/:workspaceId/members/:targetUserId/ban
 // @desc    Ban a member (removes from members, adds to bannedUsers)

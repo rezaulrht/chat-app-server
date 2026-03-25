@@ -1205,6 +1205,24 @@ exports.joinPublicWorkspace = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
+// GET /api/workspaces/:workspaceId/bans
+// List all banned users with populated user data.
+// ---------------------------------------------------------------------------
+exports.getBannedUsers = async (req, res) => {
+  try {
+    const workspace = req.workspace;
+    await workspace.populate([
+      { path: "bannedUsers.user", select: "name avatar email" },
+      { path: "bannedUsers.bannedBy", select: "name avatar" },
+    ]);
+    res.json(workspace.bannedUsers);
+  } catch (err) {
+    console.error("getBannedUsers error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
 // POST /api/workspaces/:workspaceId/members/:targetUserId/ban
 // Ban a member: adds to bannedUsers, removes from members.
 // Guards: cannot ban the owner; cannot self-ban.
