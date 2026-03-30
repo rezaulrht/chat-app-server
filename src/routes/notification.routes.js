@@ -25,10 +25,6 @@ router.patch("/read-all", markAllRead);
 // @desc   Mark one as read
 router.patch("/:id/read", markRead);
 
-// @route  DELETE /api/notifications/:id
-// @desc   Delete one notification
-router.delete("/:id", deleteNotification);
-
 // @route  GET /api/notifications/prefs
 // @desc   Get notification preferences
 router.get("/prefs", getPrefs);
@@ -36,5 +32,9 @@ router.get("/prefs", getPrefs);
 // @route  PATCH /api/notifications/prefs
 // @desc   Update notification preferences
 router.patch("/prefs", updatePrefs);
+
+// @route  DELETE /api/notifications/:id
+// @desc   Delete one notification
+router.delete("/:id", deleteNotification);
 
 module.exports = router;

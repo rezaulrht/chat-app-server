@@ -79,6 +79,7 @@ exports.updatePrefs = async (req, res) => {
       { $set: update },
       { new: true, select: "notificationPrefs" }
     ).lean();
+    if (!user) return res.status(404).json({ message: "User not found" });
     res.json({ prefs: user.notificationPrefs });
   } catch (err) {
     console.error("updatePrefs error:", err.message);
