@@ -153,6 +153,112 @@ const registerConversationHandlers = (socket, { emitToUser, io }) => {
   );
 
   // ----------------------------------------------------------------
+  // conversation:customise
+  // Client emits when changing chat colour, emoji, or nicknames
+  // ----------------------------------------------------------------
+  socket.on(
+    "conversation:customise",
+    async ({ conversationId, type, value, targetUserId }) => {
+      try {
+        if (!conversationId || !type) return;
+
+        const conversation = await Conversation.findOne({
+          _id: conversationId,
+          participants: socket.userId,
+        });
+
+        if (!conversation) return;
+
+        let iterUser = await require("../models/User").findById(socket.userId).select("name");
+        let textString = "";
+
+        // Ensure customisation object exists
+        if (!conversation.customisation) {
+          conversation.customisation = { color: "#00d3bb", emoji: "👍", nicknames: new Map() };
+        }
+
+        if (type === "color") {
+          conversation.customisation.color = value;
+          textString = `${iterUser.name} changed the chat colour.`;
+        } else if (type === "emoji") {
+          conversation.customisation.emoji = value;
+          textString = `${iterUser.name} set the quick reaction to ${value}.`;
+        } else if (type === "nickname") {
+          if (!targetUserId) return;
+          if (value) {
+            conversation.customisation.nicknames.set(targetUserId, value);
+          } else {
+            conversation.customisation.nicknames.delete(targetUserId);
+          }
+          const targetUser = await require("../models/User").findById(targetUserId).select("name");
+          textString = value 
+            ? `${iterUser.name} set the nickname for ${targetUser.name} to ${value}.`
+            : `${iterUser.name} removed the nickname for ${targetUser.name}.`;
+        } else {
+          return;
+        }
+        conversation.markModified("customisation");
+        await conversation.save();
+
+        const message = await Message.create({
+          conversationId,
+          sender: socket.userId,
+          isSystem: true,
+          systemAction: `update_${type}`,
+          text: textString,
+        });
+
+        const populatedMessage = await Message.findById(message._id).populate("sender", "name avatar");
+
+        const lastMessageUpdate = {
+          text: textString,
+          sender: socket.userId,
+          timestamp: message.createdAt,
+        };
+
+        const isGroup = conversation.type === "group";
+        const inc = {};
+        conversation.participants.forEach((p) => {
+          if (p.toString() !== socket.userId) inc[`unreadCount.${p}`] = 1;
+        });
+
+        await Conversation.findByIdAndUpdate(
+          conversationId,
+          {
+            $set: {
+              lastMessage: lastMessageUpdate,
+              updatedAt: message.createdAt,
+            },
+            $inc: inc,
+          }
+        );
+
+        // Broadcast to everyone in the room
+        if (io) {
+          const roomId = `conv:${conversationId}`;
+          // Payload for message:new
+          const payload = {
+            _id: message._id,
+            conversationId,
+            sender: populatedMessage.sender,
+            text: message.text,
+            isSystem: message.isSystem,
+            systemAction: message.systemAction,
+            createdAt: message.createdAt,
+          };
+          io.to(roomId).emit("message:new", payload);
+          io.to(roomId).emit("conversation:customise:updated", {
+            conversationId,
+            customisation: conversation.toJSON().customisation,
+          });
+        }
+      } catch (err) {
+        console.error("conversation:customise error:", err.message);
+      }
+    }
+  );
+
+  // ----------------------------------------------------------------
   // conversation:join / conversation:leave
   // Client emits when opening / closing a conversation window.
   // Joins the socket into a named room for real-time broadcasting.

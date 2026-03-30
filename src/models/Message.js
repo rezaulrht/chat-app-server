@@ -50,6 +50,16 @@ const messageSchema = new mongoose.Schema(
       default: null,
     },
 
+    //  NEW: System Messages
+    isSystem: {
+      type: Boolean,
+      default: false,
+    },
+    systemAction: {
+      type: String, // e.g. "update_color", "update_emoji", "update_nickname"
+      default: null,
+    },
+
     //  NEW: Thread Reply Field
     replyTo: {
       type: mongoose.Schema.Types.ObjectId,

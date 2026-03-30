@@ -8,6 +8,9 @@ const Message = require("../models/Message");
 const Conversation = require("../models/Conversation");
 const { DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const r2Client = require("../config/r2");
+const User = require("../models/User");
+const NotificationService = require("../services/notification.service");
+const createHelpers = require("./helpers");
 
 async function deleteR2Attachments(attachments) {
   if (!attachments?.length) return;
@@ -20,6 +23,24 @@ async function deleteR2Attachments(attachments) {
       );
     })
   );
+}
+
+/**
+ * Parse @name mentions from message text.
+ * Returns array of matched user IDs from the given participants list.
+ * Participants must be populated objects with { _id, name }.
+ */
+async function parseMentions(text, participants, senderId) {
+  if (!text) return [];
+  const mentioned = new Set();
+  const sorted = [...participants].sort((a, b) => b.name.length - a.name.length);
+  for (const p of sorted) {
+    if (p._id.toString() === senderId) continue;
+    if (text.toLowerCase().includes(`@${p.name.toLowerCase()}`)) {
+      mentioned.add(p._id.toString());
+    }
+  }
+  return Array.from(mentioned);
 }
 
 const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
@@ -189,6 +210,39 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
             });
           }
 
+          // ── Notifications ────────────────────────────────────────
+          // Populate participants to resolve @mention names
+          const populatedParticipants = await User.find({
+            _id: { $in: conversation.participants },
+          }).select("_id name").lean();
+
+          const mentionedIds = await parseMentions(text, populatedParticipants, socket.userId);
+          const mentionedSet = new Set(mentionedIds);
+
+          const { emitToUser: emitFn } = createHelpers(io);
+
+          for (const participantId of otherParticipants) {
+            if (mentionedSet.has(participantId)) {
+              // Send mention notification instead of generic message notification
+              await NotificationService.push(emitFn, {
+                recipientId: participantId,
+                type: "chat_mention",
+                actorId: socket.userId,
+                data: {
+                  conversationId,
+                  conversationName: conversation.name || "Group",
+                },
+              });
+            } else {
+              await NotificationService.push(emitFn, {
+                recipientId: participantId,
+                type: "chat_message",
+                actorId: socket.userId,
+                data: { conversationId },
+              });
+            }
+          }
+
           return; // done for group path
         }
 
@@ -242,6 +296,15 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
             unreadCount,
           });
         }
+
+        // ── Notification ─────────────────────────────────────────
+        const { emitToUser: emitFn } = createHelpers(io);
+        await NotificationService.push(emitFn, {
+          recipientId: receiverId,
+          type: "chat_message",
+          actorId: socket.userId,
+          data: { conversationId },
+        });
       } catch (err) {
         console.error("message:send error:", err.message);
         socket.emit("message:error", { message: "Failed to send message" });

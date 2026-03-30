@@ -2,6 +2,8 @@ const mongoose = require("mongoose");
 const Post = require("../models/Post");
 const Comment = require("../models/Comment");
 const User = require("../models/User");
+const NotificationService = require("../services/notification.service");
+const createHelpers = require("../socket/helpers");
 
 const FEED_REPUTATION = {
   POST_REACTION: 2,
@@ -581,6 +583,14 @@ exports.followUser = async (req, res) => {
         following: true,
       });
 
+      const { emitToUser } = createHelpers(req.app.get("io"));
+      await NotificationService.push(emitToUser, {
+        recipientId: targetId,
+        type: "feed_follow",
+        actorId: myId,
+        data: {},
+      });
+
       return res.json({ following: true, message: "Followed" });
     }
   } catch (err) {
@@ -753,6 +763,20 @@ exports.reactToPost = async (req, res) => {
     fullPost.reactionCount = total;
 
     await fullPost.save();
+
+    // ── Notification (only when adding a reaction, not removing) ──
+    if (!alreadyReacted && fullPost.author.toString() !== userId) {
+      const { emitToUser } = createHelpers(getIo(req));
+      await NotificationService.push(emitToUser, {
+        recipientId: fullPost.author.toString(),
+        type: "feed_reaction",
+        actorId: userId,
+        data: {
+          postId: id,
+          postTitle: fullPost.title || "",
+        },
+      });
+    }
 
     const reactionsObj = toPlainReactions(fullPost.reactions);
 
@@ -942,6 +966,20 @@ exports.createComment = async (req, res) => {
 
     const io = getIo(req);
     io.to(`feed:post:${postId}`).emit("feed:comment:created", { comment });
+
+    // ── Notification ─────────────────────────────────────────────
+    if (fullPost.author.toString() !== userId) {
+      const { emitToUser } = createHelpers(getIo(req));
+      await NotificationService.push(emitToUser, {
+        recipientId: fullPost.author.toString(),
+        type: "feed_comment",
+        actorId: userId,
+        data: {
+          postId: postId,
+          postTitle: fullPost.type === "question" ? "your question" : "your post",
+        },
+      });
+    }
 
     return res.status(201).json(comment);
   } catch (err) {
@@ -1295,6 +1333,17 @@ exports.toggleAcceptedAnswer = async (req, res) => {
         commentId,
         resolved: true,
       });
+
+      // ── Notification ─────────────────────────────────────────────
+      if (comment.author.toString() !== userId) {
+        const { emitToUser } = createHelpers(getIo(req));
+        await NotificationService.push(emitToUser, {
+          recipientId: comment.author.toString(),
+          type: "feed_answer_accepted",
+          actorId: userId,
+          data: { postId, postTitle: "your answer" },
+        });
+      }
 
       return res.json({ acceptedComment: commentId, status: "resolved" });
     } catch (err) {

@@ -141,6 +141,7 @@ exports.getConversations = async (req, res) => {
           name: conv.name,
           description: conv.description, // ← ADD THIS LINE
           avatar: conv.avatar,
+          customisation: conv.customisation,
           createdBy: conv.createdBy,
           admins: conv.admins,
           participants: conv.participants,
@@ -159,6 +160,7 @@ exports.getConversations = async (req, res) => {
         _id: conv._id,
         type: "dm",
         participant: other,
+        customisation: conv.customisation,
         lastMessage: conv.lastMessage,
         updatedAt: conv.updatedAt,
         unreadCount,
@@ -348,10 +350,10 @@ exports.createConversation = async (req, res) => {
       const isMuted = conversation.mutedBy.some(
         (id) => id.toString() === userId,
       );
-
       return res.status(200).json({
         _id: conversation._id,
         participant: other,
+        customisation: conversation.customisation,
         lastMessage: conversation.lastMessage,
         updatedAt: conversation.updatedAt,
         unreadCount,
@@ -371,10 +373,10 @@ exports.createConversation = async (req, res) => {
     const other = conversation.participants.find(
       (p) => p._id.toString() !== userId,
     );
-
     res.status(201).json({
       _id: conversation._id,
       participant: other,
+      customisation: conversation.customisation,
       lastMessage: conversation.lastMessage,
       updatedAt: conversation.updatedAt,
       unreadCount: 0,

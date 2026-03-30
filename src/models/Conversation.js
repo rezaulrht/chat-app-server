@@ -57,6 +57,24 @@ const conversationSchema = new mongoose.Schema(
     ],
     // ──────────────────────────────────────────────────────────────
 
+    // ── Chat Customisation (Like Messenger) ────────────────────────
+    customisation: {
+      color: {
+        type: String,
+        default: "#00d3bb",
+      },
+      emoji: {
+        type: String,
+        default: "👍",
+      },
+      nicknames: {
+        type: Map,
+        of: String,
+        default: {},
+      },
+    },
+    // ──────────────────────────────────────────────────────────────
+
     lastMessage: {
       text: {
         type: String,

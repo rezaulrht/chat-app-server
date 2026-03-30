@@ -1,5 +1,7 @@
 const CallLog = require("../models/CallLog");
 const Message = require("../models/Message");
+const NotificationService = require("../services/notification.service");
+const createHelpers = require("./helpers");
 
 const registerCallHandlers = (socket, { emitToUser, io }) => {
   // call:accepted - Recipient accepts the call
@@ -52,6 +54,15 @@ const registerCallHandlers = (socket, { emitToUser, io }) => {
       }
 
       await emitToUser(callLog.initiator._id.toString(), "call:declined", { callId });
+
+      // Notify the recipient (socket.userId) that they missed a call from the initiator
+      const { emitToUser: emitFn } = createHelpers(io);
+      await NotificationService.push(emitFn, {
+        recipientId: socket.userId,
+        type: "call_missed",
+        actorId: callLog.initiator._id.toString(),
+        data: { conversationId: callLog.conversationId?.toString() },
+      });
     } catch (error) {
       console.error("call:declined error:", error);
     }

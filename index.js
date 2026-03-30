@@ -22,6 +22,7 @@ const readReceiptRoutes = require("./src/routes/readReceipt.routes");
 const feedUserRoutes = require("./src/routes/feed.users.routes");
 const uploadRoutes = require("./src/routes/upload.routes");
 const callRoutes = require("./src/routes/calls.routes");
+const notificationRoutes = require("./src/routes/notification.routes");
 const wordspyRoutes = require("./src/routes/WordSpy/wordspy.routes");
 const mongoose = require("mongoose");
 
@@ -80,6 +81,9 @@ app.use("/api/upload", uploadRoutes);
 
 // Call Routes
 app.use("/api/calls", callRoutes);
+
+// Notification Routes
+app.use("/api/notifications", notificationRoutes);
 
 // Word Spy Routes
 app.use("/api/wordspy", wordspyRoutes);

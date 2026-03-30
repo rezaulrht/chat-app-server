@@ -24,6 +24,8 @@ const mongoose = require("mongoose");
 const Workspace = require("../models/Workspace");
 const Module = require("../models/Module");
 const ModuleMessage = require("../models/ModuleMessage");
+const NotificationService = require("../services/notification.service");
+const createHelpers = require("../socket/helpers");
 
 // ---------------------------------------------------------------------------
 // Internal helper — inline workspace membership check
@@ -824,15 +826,22 @@ exports.sendModuleMessage = async (req, res) => {
 
     // ── 11. Send notifications for mentions ──────────────────────
     if (mentions.length > 0) {
-      mentions.forEach(userId => {
-        if (userId !== req.user.id) {
-          io.to(`user:${userId}`).emit("module:mention", {
-            message: populated,
-            workspaceName: workspace.name,
-            moduleName: module.name
+      const { emitToUser } = createHelpers(io);
+      for (const mentionedUserId of mentions) {
+        if (mentionedUserId !== req.user.id) {
+          await NotificationService.push(emitToUser, {
+            recipientId: mentionedUserId,
+            type: "workspace_mention",
+            actorId: req.user.id,
+            data: {
+              workspaceId,
+              moduleId,
+              moduleName: module.name,
+              workspaceName: workspace.name,
+            },
           });
         }
-      });
+      }
     }
 
     // ── 11. Respond ──────────────────────────────────────────────
