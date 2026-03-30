@@ -626,6 +626,73 @@ exports.getModuleMessages = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
+// GET /api/workspaces/:workspaceId/modules/:moduleId/messages/:msgId/thread
+// Get thread replies for a message.
+// ---------------------------------------------------------------------------
+exports.getThreadMessages = async (req, res) => {
+  try {
+    const { workspaceId, moduleId, msgId } = req.params;
+
+    const result = await checkMembership(res, workspaceId, req.user.id);
+    if (!result) return;
+    const { workspace, memberRecord } = result;
+
+    const module = await Module.findOne({ _id: moduleId, workspaceId });
+    if (!module) return res.status(404).json({ message: "Module not found" });
+
+    const perms = computePermissions(workspace, memberRecord, module);
+    if (!perms.has(Workspace.PERMISSIONS.VIEW_CHANNEL)) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const messages = await ModuleMessage.find({ moduleId, replyTo: msgId })
+      .where("deletedFor")
+      .ne(req.user.id)
+      .sort({ createdAt: 1 })
+      .populate("sender", "name avatar");
+
+    return res.json({ messages });
+  } catch (err) {
+    console.error("getThreadMessages error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/workspaces/:workspaceId/modules/:moduleId/pinned
+// Get pinned messages for a module.
+// ---------------------------------------------------------------------------
+exports.getPinnedMessages = async (req, res) => {
+  try {
+    const { workspaceId, moduleId } = req.params;
+
+    const result = await checkMembership(res, workspaceId, req.user.id);
+    if (!result) return;
+    const { workspace, memberRecord } = result;
+
+    const module = await Module.findOne({ _id: moduleId, workspaceId });
+    if (!module) return res.status(404).json({ message: "Module not found" });
+
+    const perms = computePermissions(workspace, memberRecord, module);
+    if (!perms.has(Workspace.PERMISSIONS.VIEW_CHANNEL)) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const messages = await ModuleMessage.find({ moduleId, isPinned: true })
+      .where("deletedFor")
+      .ne(req.user.id)
+      .sort({ pinnedAt: -1 })
+      .populate("sender", "name avatar");
+
+    return res.json({ pinnedMessages: messages });
+  } catch (err) {
+    console.error("getPinnedMessages error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/workspaces/:workspaceId/modules/:moduleId/search
 // POST /api/workspaces/:workspaceId/modules/:moduleId/messages
 // Send a message in a module.
 // Body: { text?, gifUrl?, replyTo? }
@@ -675,6 +742,30 @@ exports.sendModuleMessage = async (req, res) => {
         return res.status(400).json({ message: "Message content is required" });
       }
     }
+    
+    // ── 6. Parse mentions ────────────────────────────────────────
+    let mentions = [];
+    if (text) {
+      // Get all workspace members to match names against text
+      const wsForMentions = await Workspace.findById(workspaceId).select("members roles").populate("members.user", "name");
+      const availableMembers = wsForMentions.members
+        .filter(m => m.user && m.user.name)
+        .sort((a, b) => b.user.name.length - a.user.name.length);
+
+      const mentionIds = new Set();
+      for (const m of availableMembers) {
+        // Only include members who can view this module
+        const candidatePerms = computePermissions(wsForMentions, m, module);
+        if (!candidatePerms.has(Workspace.PERMISSIONS.VIEW_CHANNEL)) continue;
+
+        const nameStr = `@${m.user.name}`;
+        // Case-insensitive check for the name in the text
+        if (text.toLowerCase().includes(nameStr.toLowerCase())) {
+          mentionIds.add(String(m.user._id));
+        }
+      }
+      mentions = Array.from(mentionIds);
+    }
 
     // ── 6. Validate replyTo ──────────────────────────────────────
     if (replyTo) {
@@ -695,6 +786,7 @@ exports.sendModuleMessage = async (req, res) => {
       text: text || null,
       gifUrl: gifUrl || null,
       replyTo: replyTo || null,
+      mentions: mentions.length > 0 ? mentions : [],
     });
 
     // ── 8. Populate ──────────────────────────────────────────────
@@ -729,6 +821,19 @@ exports.sendModuleMessage = async (req, res) => {
     // ── 10. Emit socket event ────────────────────────────────────
     const io = req.app.get("io");
     io.to(`module:${moduleId}`).emit("module:message:new", populated);
+
+    // ── 11. Send notifications for mentions ──────────────────────
+    if (mentions.length > 0) {
+      mentions.forEach(userId => {
+        if (userId !== req.user.id) {
+          io.to(`user:${userId}`).emit("module:mention", {
+            message: populated,
+            workspaceName: workspace.name,
+            moduleName: module.name
+          });
+        }
+      });
+    }
 
     // ── 11. Respond ──────────────────────────────────────────────
     return res.status(201).json(populated);
@@ -966,6 +1071,56 @@ exports.deleteModuleMessage = async (req, res) => {
     return res.json({ message: "Message deleted" });
   } catch (err) {
     console.error("deleteModuleMessage error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/workspaces/:workspaceId/modules/:moduleId/search
+// Search for messages.
+// ---------------------------------------------------------------------------
+exports.searchModuleMessages = async (req, res) => {
+  try {
+    const { workspaceId, moduleId } = req.params;
+    const { q } = req.query;
+
+    if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
+      return res.status(400).json({ message: "Invalid workspace ID" });
+    }
+    if (!mongoose.Types.ObjectId.isValid(moduleId)) {
+      return res.status(400).json({ message: "Invalid module ID" });
+    }
+
+    const result = await checkMembership(res, workspaceId, req.user.id);
+    if (!result) return;
+    const { workspace, memberRecord } = result;
+
+    const module = await Module.findOne({ _id: moduleId, workspaceId });
+    if (!module) return res.status(404).json({ message: "Module not found" });
+
+    const perms = computePermissions(workspace, memberRecord, module);
+    if (!perms.has(Workspace.PERMISSIONS.VIEW_CHANNEL)) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    if (!q || !q.trim()) {
+      return res.json({ messages: [] });
+    }
+
+    // Rely on MongoDB text index
+    const messages = await ModuleMessage.find({
+      moduleId,
+      $text: { $search: q },
+    })
+      .where("deletedFor")
+      .ne(req.user.id)
+      .sort({ score: { $meta: "textScore" } })
+      .limit(30)
+      .populate("sender", "name avatar");
+
+    return res.json({ messages });
+  } catch (err) {
+    console.error("searchModuleMessages error:", err.message);
     return res.status(500).json({ message: "Server error" });
   }
 };
