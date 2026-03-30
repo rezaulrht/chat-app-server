@@ -91,6 +91,17 @@ const userSchema = new mongoose.Schema(
         maxlength: 40,
       },
     ],
+
+    // ── Notification preferences ─────────────────────────────────────────────
+    notificationPrefs: {
+      chat_message:     { type: Boolean, default: true },
+      chat_mention:     { type: Boolean, default: true },
+      call_missed:      { type: Boolean, default: true },
+      feed_reaction:    { type: Boolean, default: true },
+      feed_comment:     { type: Boolean, default: true },
+      feed_follow:      { type: Boolean, default: true },
+      workspace_mention:{ type: Boolean, default: true },
+    },
   },
   { timestamps: true },
 );
