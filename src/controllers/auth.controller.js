@@ -217,7 +217,23 @@ exports.login = async (req, res) => {
 exports.oauthCallback = async (req, res) => {
   try {
     const token = generateToken(req.user);
-    res.redirect(`${process.env.SITE_URL}/login-success?token=${token}`);
+    
+    // Build redirect URL with optional merge info
+    let redirectUrl = `${process.env.SITE_URL}/login-success?token=${token}`;
+    
+    // Surface merge info to client if user just merged accounts
+    if (req.user.justMerged) {
+      redirectUrl += `&merged=true`;
+      if (req.user.mergeMessage) {
+        redirectUrl += `&mergeMessage=${encodeURIComponent(req.user.mergeMessage)}`;
+      }
+    }
+    
+    // Clear ephemeral properties after use
+    delete req.user.justMerged;
+    delete req.user.mergeMessage;
+    
+    res.redirect(redirectUrl);
   } catch (err) {
     console.error(err.message);
     res.status(500).send("Server error");
@@ -464,13 +480,22 @@ exports.uploadBanner = async (req, res) => {
       contentType: req.file.mimetype,
     });
 
-    const imgbbResponse = await axios.post(
-      `https://api.imgbb.com/1/upload?key=${imgbbKey}`,
-      formData,
-      {
-        headers: formData.getHeaders(),
+    let imgbbResponse;
+    try {
+      imgbbResponse = await axios.post(
+        `https://api.imgbb.com/1/upload?key=${imgbbKey}`,
+        formData,
+        {
+          headers: formData.getHeaders(),
+          timeout: 15000, // 15 second timeout for image upload
+        }
+      );
+    } catch (err) {
+      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        return res.status(504).json({ message: "Image upload timed out. Please try again." });
       }
-    );
+      throw err;
+    }
 
     if (!imgbbResponse.data || !imgbbResponse.data.success) {
       return res.status(500).json({ message: "Failed to upload image to storage" });
@@ -531,18 +556,27 @@ exports.connectGitHub = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // Exchange authorization code for access token
-    const tokenResponse = await axios.post(
-      "https://github.com/login/oauth/access_token",
-      {
-        client_id: process.env.GITHUB_CLIENT_ID,
-        client_secret: process.env.GITHUB_CLIENT_SECRET,
-        code,
-      },
-      {
-        headers: { Accept: "application/json" },
+    // Exchange authorization code for access token (with timeout)
+    let tokenResponse;
+    try {
+      tokenResponse = await axios.post(
+        "https://github.com/login/oauth/access_token",
+        {
+          client_id: process.env.GITHUB_CLIENT_ID,
+          client_secret: process.env.GITHUB_CLIENT_SECRET,
+          code,
+        },
+        {
+          headers: { Accept: "application/json" },
+          timeout: 10000, // 10 second timeout
+        }
+      );
+    } catch (err) {
+      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        return res.status(504).json({ message: "GitHub authentication timed out. Please try again." });
       }
-    );
+      throw err;
+    }
 
     if (!tokenResponse.data || !tokenResponse.data.access_token) {
       return res.status(400).json({ message: "Failed to obtain GitHub access token" });
@@ -550,17 +584,38 @@ exports.connectGitHub = async (req, res) => {
 
     const accessToken = tokenResponse.data.access_token;
 
-    // Fetch GitHub user profile
-    const profileResponse = await axios.get("https://api.github.com/user", {
-      headers: {
-        Authorization: `token ${accessToken}`,
-        "User-Agent": "ConvoX-Server",
-      },
-    });
+    // Fetch GitHub user profile (with timeout)
+    let profileResponse;
+    try {
+      profileResponse = await axios.get("https://api.github.com/user", {
+        headers: {
+          Authorization: `token ${accessToken}`,
+          "User-Agent": "ConvoX-Server",
+        },
+        timeout: 10000, // 10 second timeout
+      });
+    } catch (err) {
+      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        return res.status(504).json({ message: "GitHub API timed out. Please try again." });
+      }
+      throw err;
+    }
 
     const githubProfile = profileResponse.data;
     const providerId = String(githubProfile.id);
     const username = githubProfile.login;
+
+    // Check if this GitHub account is already linked to ANOTHER user
+    const existingOwner = await User.findOne({
+      _id: { $ne: userId }, // Different user
+      "socialConnections.github.providerId": providerId
+    });
+
+    if (existingOwner) {
+      return res.status(409).json({ 
+        message: "This GitHub account is already linked to another user"
+      });
+    }
 
     // Update user's social connections
     user.socialConnections = user.socialConnections || {};
