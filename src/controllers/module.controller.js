@@ -495,12 +495,10 @@ exports.deleteModule = async (req, res) => {
     // ── 2c. Permission check (MANAGE_CHANNELS required) ──────────
     const perms = computePermissions(workspace, memberRecord, module);
     if (!perms.has(Workspace.PERMISSIONS.MANAGE_CHANNELS)) {
-      return res
-        .status(403)
-        .json({
-          message:
-            "Only members with Manage Channels permission can delete modules",
-        });
+      return res.status(403).json({
+        message:
+          "Only members with Manage Channels permission can delete modules",
+      });
     }
 
     // ── 3. Emit before deletion ──────────────────────────────────
@@ -741,6 +739,17 @@ exports.sendModuleMessage = async (req, res) => {
       return res.status(400).json({ message: "Invalid module ID" });
     }
 
+    // ── 2. Membership check ──────────────────────────────────────
+    const result = await checkMembership(res, workspaceId, req.user.id);
+    if (!result) return;
+    const { workspace, memberRecord } = result;
+
+    // ── 2b. Fetch module ─────────────────────────────────────────
+    const module = await Module.findOne({ _id: moduleId, workspaceId });
+    if (!module) {
+      return res.status(404).json({ message: "Module not found" });
+    }
+
     // ── 3. Check access & permissions ──────────────────────────────
     const perms = computePermissions(workspace, memberRecord, module);
 
@@ -759,12 +768,10 @@ exports.sendModuleMessage = async (req, res) => {
       !perms.has(Workspace.PERMISSIONS.MANAGE_MESSAGES) &&
       !perms.has(Workspace.PERMISSIONS.MANAGE_CHANNELS)
     ) {
-      return res
-        .status(403)
-        .json({
-          message:
-            "Only members with Manage Messages permission can post in announcements",
-        });
+      return res.status(403).json({
+        message:
+          "Only members with Manage Messages permission can post in announcements",
+      });
     }
 
     // ── 4 & 5. Validate content ──────────────────────────────────
