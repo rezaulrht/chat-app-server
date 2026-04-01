@@ -19,9 +19,12 @@ async function deleteR2Attachments(attachments) {
       const key = att.publicId || att.url?.split("/").pop();
       if (!key) return Promise.resolve();
       return r2Client.send(
-        new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key })
+        new DeleteObjectCommand({
+          Bucket: process.env.R2_BUCKET_NAME,
+          Key: key,
+        }),
       );
-    })
+    }),
   );
 }
 
@@ -33,7 +36,9 @@ async function deleteR2Attachments(attachments) {
 async function parseMentions(text, participants, senderId) {
   if (!text) return [];
   const mentioned = new Set();
-  const sorted = [...participants].sort((a, b) => b.name.length - a.name.length);
+  const sorted = [...participants].sort(
+    (a, b) => b.name.length - a.name.length,
+  );
   for (const p of sorted) {
     if (p._id.toString() === senderId) continue;
     if (text.toLowerCase().includes(`@${p.name.toLowerCase()}`)) {
@@ -41,6 +46,26 @@ async function parseMentions(text, participants, senderId) {
     }
   }
   return Array.from(mentioned);
+}
+
+function sanitizeMentionIds(mentions, allowedIds = [], senderId) {
+  if (!Array.isArray(mentions) || mentions.length === 0) return [];
+  const allowed = new Set(allowedIds.map(String));
+  const normalized = new Set();
+
+  for (const mention of mentions) {
+    const id =
+      typeof mention === "object"
+        ? mention?._id?.toString() || mention?.id?.toString()
+        : mention?.toString?.();
+
+    if (!id) continue;
+    if (senderId && id === senderId.toString()) continue;
+    if (allowed.size > 0 && !allowed.has(id)) continue;
+    normalized.add(id);
+  }
+
+  return Array.from(normalized);
 }
 
 const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
@@ -52,9 +77,23 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
   // ----------------------------------------------------------------
   socket.on(
     "message:send",
-    async ({ conversationId, receiverId, text, gifUrl, tempId, replyTo, attachments }) => {
+    async ({
+      conversationId,
+      receiverId,
+      text,
+      gifUrl,
+      tempId,
+      replyTo,
+      attachments,
+      mentions,
+    }) => {
       if (!conversationId) return;
-      if (!text?.trim() && !gifUrl && (!attachments || attachments.length === 0)) return;
+      if (
+        !text?.trim() &&
+        !gifUrl &&
+        (!attachments || attachments.length === 0)
+      )
+        return;
 
       try {
         // Fetch conversation to determine type and validate membership
@@ -93,11 +132,15 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
 
         // ── Handle Thread Metadata Update ────────────────────────────
         if (replyTo) {
-          const updatedReplyTo = await Message.findByIdAndUpdate(replyTo, {
-            $inc: { replyCount: 1 },
-            $set: { lastReplyAt: message.createdAt },
-          }, { new: true });
-          
+          const updatedReplyTo = await Message.findByIdAndUpdate(
+            replyTo,
+            {
+              $inc: { replyCount: 1 },
+              $set: { lastReplyAt: message.createdAt },
+            },
+            { new: true },
+          );
+
           // Emit thread update to the room
           io.to(`conv:${conversationId}`).emit("message:thread:update", {
             messageId: replyTo,
@@ -118,7 +161,7 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
 
         // ── Update lastMessage + unreadCount ────────────────────────
         const lastMessageUpdate = {
-          text: gifUrl ? "GIF" : (text?.trim() || ""),
+          text: gifUrl ? "GIF" : text?.trim() || "",
           sender: socket.userId,
           timestamp: message.createdAt,
           gifUrl: gifUrl || null,
@@ -138,7 +181,7 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
               updatedAt: message.createdAt,
               $inc: inc,
             },
-            { returnDocument: 'after' },
+            { returnDocument: "after" },
           );
         } else {
           await Conversation.findByIdAndUpdate(
@@ -148,7 +191,7 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
               updatedAt: message.createdAt,
               $inc: { [`unreadCount.${receiverId}`]: 1 },
             },
-            { returnDocument: 'after' },
+            { returnDocument: "after" },
           );
         }
 
@@ -214,9 +257,26 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
           // Populate participants to resolve @mention names
           const populatedParticipants = await User.find({
             _id: { $in: conversation.participants },
-          }).select("_id name").lean();
+          })
+            .select("_id name")
+            .lean();
 
-          const mentionedIds = await parseMentions(text, populatedParticipants, socket.userId);
+          const participantIds = conversation.participants.map((p) =>
+            p.toString(),
+          );
+          const mentionIdsFromPayload = sanitizeMentionIds(
+            mentions,
+            participantIds,
+            socket.userId,
+          );
+          const mentionIdsFromText = await parseMentions(
+            text,
+            populatedParticipants,
+            socket.userId,
+          );
+          const mentionedIds = Array.from(
+            new Set([...mentionIdsFromPayload, ...mentionIdsFromText]),
+          );
           const mentionedSet = new Set(mentionedIds);
 
           const { emitToUser: emitFn } = createHelpers(io);
@@ -299,9 +359,35 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
 
         // ── Notification ─────────────────────────────────────────
         const { emitToUser: emitFn } = createHelpers(io);
+        const mentionIdsFromPayload = sanitizeMentionIds(
+          mentions,
+          [receiverId],
+          socket.userId,
+        );
+
+        let receiverWasMentioned = mentionIdsFromPayload.includes(
+          receiverId.toString(),
+        );
+
+        if (!receiverWasMentioned && text?.includes("@")) {
+          const receiver = await User.findById(receiverId)
+            .select("_id name")
+            .lean();
+          if (receiver) {
+            const mentionIdsFromText = await parseMentions(
+              text,
+              [receiver],
+              socket.userId,
+            );
+            receiverWasMentioned = mentionIdsFromText.includes(
+              receiverId.toString(),
+            );
+          }
+        }
+
         await NotificationService.push(emitFn, {
           recipientId: receiverId,
-          type: "chat_message",
+          type: receiverWasMentioned ? "chat_mention" : "chat_message",
           actorId: socket.userId,
           data: { conversationId },
         });
@@ -329,7 +415,7 @@ const registerMessageHandlers = (socket, { emitToUser, isUserOnline, io }) => {
       let existingUsers = message.reactions.get(emoji) || [];
 
       // Ensure existingUsers is an array and doesn't contain the userId as an object vs string mismatch
-      existingUsers = existingUsers.map(id => id.toString());
+      existingUsers = existingUsers.map((id) => id.toString());
 
       const idx = existingUsers.indexOf(userIdStr);
 
