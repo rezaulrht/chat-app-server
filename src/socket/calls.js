@@ -84,7 +84,12 @@ const registerCallHandlers = (socket, { emitToUser, io }) => {
 
       const alreadyEnded = callLog.status !== "active";
       const duration =
-        callLog.duration || Math.floor((Date.now() - callLog.startedAt) / 1000);
+        callLog.duration ||
+        (callLog.startedAt
+          ? Math.floor(
+              (Date.now() - new Date(callLog.startedAt).getTime()) / 1000,
+            )
+          : 0);
 
       // Only update DB if still active
       if (!alreadyEnded) {
@@ -112,7 +117,7 @@ const registerCallHandlers = (socket, { emitToUser, io }) => {
           // Push to chat in real time — same event ChatWindow listens to
           io.to(`conv:${callLog.conversationId}`).emit(
             "message:new",
-            callMessage,
+            callMessage.toObject(),
           );
         }
       }
@@ -124,14 +129,22 @@ const registerCallHandlers = (socket, { emitToUser, io }) => {
           duration,
         });
       } else {
+        const initiatorIdStr = callLog.initiator._id.toString();
+        const participantIds = new Set(
+          callLog.participants.map((p) => p.userId.toString()),
+        );
+
         callLog.participants.forEach((p) => {
           io.to(`user:${p.userId}`).emit("call:ended", { callId, duration });
         });
-        // Also notify the initiator directly in case they're not in participants list
-        io.to(`user:${callLog.initiator._id}`).emit("call:ended", {
-          callId,
-          duration,
-        });
+
+        // Notify initiator only if not already in participants list
+        if (!participantIds.has(initiatorIdStr)) {
+          io.to(`user:${initiatorIdStr}`).emit("call:ended", {
+            callId,
+            duration,
+          });
+        }
       }
     } catch (error) {
       console.error("call:ended error:", error);

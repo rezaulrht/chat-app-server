@@ -84,7 +84,13 @@ const registerVoiceChannelHandlers = (socket, { io }) => {
           },
         );
       }
-    } catch (_) {}
+    } catch (err) {
+      console.error(
+        "[voiceChannel] disconnect cleanup error for user",
+        socket.userId,
+        err,
+      );
+    }
   });
 };
 
