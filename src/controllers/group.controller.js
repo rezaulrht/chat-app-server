@@ -32,6 +32,82 @@ const sanitizeDescription = (description) => {
   return description.trim();
 };
 
+const formatHumanList = (names = []) => {
+  const clean = names.filter(Boolean);
+  if (clean.length === 0) return "members";
+  if (clean.length === 1) return clean[0];
+  if (clean.length === 2) return `${clean[0]} and ${clean[1]}`;
+  const remainder = clean.length - 2;
+  return `${clean[0]}, ${clean[1]} and ${remainder} ${remainder === 1 ? "other" : "others"}`;
+};
+
+const emitGroupSystemMessage = async ({
+  conversationId,
+  actorId,
+  text,
+  systemAction,
+  recipientIds,
+  io,
+}) => {
+  if (!conversationId || !actorId || !text) return;
+  try {
+    const message = await Message.create({
+      conversationId,
+      sender: actorId,
+      text,
+      isSystem: true,
+      systemAction,
+    });
+
+    const populatedMessage = await Message.findById(message._id).populate(
+      "sender",
+      "name avatar",
+    );
+
+    const inc = {};
+    (recipientIds || []).forEach((id) => {
+      if (id?.toString() !== actorId.toString()) {
+        inc[`unreadCount.${id}`] = 1;
+      }
+    });
+
+    const update = {
+      $set: {
+        lastMessage: {
+          text,
+          sender: actorId,
+          timestamp: message.createdAt,
+        },
+        updatedAt: message.createdAt,
+      },
+    };
+
+    if (Object.keys(inc).length > 0) {
+      update.$inc = inc;
+    }
+
+    await Conversation.findByIdAndUpdate(conversationId, update);
+
+    if (io) {
+      io.to(`conv:${conversationId}`).emit("message:new", {
+        _id: message._id,
+        conversationId,
+        sender: populatedMessage?.sender || null,
+        text,
+        isSystem: true,
+        systemAction,
+        createdAt: message.createdAt,
+      });
+    }
+  } catch (err) {
+    console.error(
+      "[emitGroupSystemMessage] non-fatal error:",
+      err?.message || err,
+    );
+    return;
+  }
+};
+
 const joinSocketsToRoom = async (io, userIds, roomId) => {
   if (!getIsRedisConnected()) {
     console.warn(
@@ -440,9 +516,26 @@ exports.addMembers = async (req, res) => {
       $set: unreadInc,
     });
 
+    const actor = await User.findById(req.user.id).select("name").lean();
+    const actorName = actor?.name || "Someone";
+    const addedNames = formatHumanList(foundUsers.map((u) => u.name));
+    const recipientIds = [
+      ...conversation.participants.map((p) => p.toString()),
+      ...toAdd.map(String),
+    ];
+
     // Force-join new members' active sockets into the room
     const roomId = `conv:${conversation._id}`;
     const io = req.app.get("io");
+    await emitGroupSystemMessage({
+      conversationId: conversation._id,
+      actorId: req.user.id,
+      text: `${actorName} added ${addedNames} to the group.`,
+      systemAction: "group_members_added",
+      recipientIds,
+      io,
+    });
+
     if (io) {
       await joinSocketsToRoom(io, toAdd, roomId);
       io.to(roomId).emit("group:members-added", {
@@ -543,9 +636,31 @@ exports.removeMembers = async (req, res) => {
       $unset: unsetFields,
     });
 
+    const [actor, removedUsers] = await Promise.all([
+      User.findById(requesterId).select("name").lean(),
+      User.find({ _id: { $in: validTargets } })
+        .select("name")
+        .lean(),
+    ]);
+
+    const actorName = actor?.name || "Someone";
+    const removedNames = formatHumanList(removedUsers.map((u) => u.name));
+    const recipientIds = participantIds.filter(
+      (id) => !validTargets.includes(id),
+    );
+
+    const io = req.app.get("io");
+    await emitGroupSystemMessage({
+      conversationId: conversation._id,
+      actorId: requesterId,
+      text: `${actorName} removed ${removedNames} from the group.`,
+      systemAction: "group_members_removed",
+      recipientIds,
+      io,
+    });
+
     // Force-leave removed members' sockets from the room
     const roomId = `conv:${conversation._id}`;
-    const io = req.app.get("io");
     if (io) {
       await leaveSocketsFromRoom(io, validTargets, roomId);
       io.to(roomId).emit("group:members-removed", {
@@ -787,6 +902,18 @@ exports.leaveGroup = async (req, res) => {
     }
 
     await Conversation.findByIdAndUpdate(conversation._id, updates);
+
+    const leavingUser = await User.findById(userId).select("name").lean();
+    const leavingName = leavingUser?.name || "A member";
+
+    await emitGroupSystemMessage({
+      conversationId: conversation._id,
+      actorId: userId,
+      text: `${leavingName} left the group.`,
+      systemAction: "group_member_left",
+      recipientIds: remainingParticipants,
+      io,
+    });
 
     // Force-leave the departing user's sockets from the room
     if (io) {
