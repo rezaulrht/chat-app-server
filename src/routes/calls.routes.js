@@ -36,7 +36,7 @@ router.post("/voice-message", upload.single("audio"), async (req, res) => {
         Key: fileName,
         Body: req.file.buffer,
         ContentType: req.file.mimetype,
-      })
+      }),
     );
 
     const url = `${process.env.R2_PUBLIC_URL}/${fileName}`;
@@ -68,7 +68,11 @@ router.post("/token", async (req, res) => {
     // Identity must be unique per room — use userId so two users with same name don't collide
     const identity = req.user.id;
 
-    const token = await generateLiveKitToken(roomName, identity, { callType, name: user?.name, avatar: user?.avatar || "" });
+    const token = await generateLiveKitToken(roomName, identity, {
+      callType,
+      name: user?.name,
+      avatar: user?.avatar || "",
+    });
 
     res.json({ token, url: process.env.LIVEKIT_URL });
   } catch (error) {
@@ -84,11 +88,15 @@ router.post("/initiate", async (req, res) => {
     const initiatorId = req.user.id;
 
     if (!conversationId || !callType) {
-      return res.status(400).json({ error: "conversationId and callType required" });
+      return res
+        .status(400)
+        .json({ error: "conversationId and callType required" });
     }
 
     if (!["audio", "video"].includes(callType)) {
-      return res.status(400).json({ error: "callType must be 'audio' or 'video'" });
+      return res
+        .status(400)
+        .json({ error: "callType must be 'audio' or 'video'" });
     }
 
     const conversation = await Conversation.findOne({
@@ -105,11 +113,16 @@ router.post("/initiate", async (req, res) => {
     // stale (caller dropped without a clean hangup) and mark it ended so
     // a new call can proceed.
     const STALE_CALL_MS = 5 * 60 * 1000;
-    const existingCall = await CallLog.findOne({ conversationId, status: "active" });
+    const existingCall = await CallLog.findOne({
+      conversationId,
+      status: "active",
+    });
     if (existingCall) {
       const age = Date.now() - new Date(existingCall.startedAt).getTime();
       if (age < STALE_CALL_MS) {
-        return res.status(409).json({ error: "A call is already active in this conversation" });
+        return res
+          .status(409)
+          .json({ error: "A call is already active in this conversation" });
       }
       // Stale — close it out silently so the new call can start
       existingCall.status = "ended";
@@ -126,7 +139,9 @@ router.post("/initiate", async (req, res) => {
       type: isGroup ? "group" : "dm",
       conversationId,
       initiator: initiatorId,
-      participants: [{ userId: initiatorId, joinedAt: new Date(), status: "joined" }],
+      participants: [
+        { userId: initiatorId, joinedAt: new Date(), status: "joined" },
+      ],
       callType,
       livekitRoomName,
       status: "active",
@@ -137,7 +152,11 @@ router.post("/initiate", async (req, res) => {
     const callPayload = {
       callId: callLog._id,
       callType,
-      initiator: { _id: initiatorId, name: initiator.name, avatar: initiator.avatar },
+      initiator: {
+        _id: initiatorId,
+        name: initiator.name,
+        avatar: initiator.avatar,
+      },
       conversationId,
       roomName: livekitRoomName,
     };
