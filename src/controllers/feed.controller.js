@@ -6,6 +6,7 @@ const NotificationService = require("../services/notification.service");
 const createHelpers = require("../socket/helpers");
 
 const FEED_REPUTATION = {
+  POST_CREATE: 3,
   POST_REACTION: 2,
   COMMENT_REACTION: 1,
   ACCEPTED_ANSWER: 15,
@@ -35,10 +36,10 @@ const SORT_PRESETS = {
 };
 
 const LEVELS = [
-  { min: 0, max: 49, level: "Newcomer", badge: "🟢" },
-  { min: 50, max: 199, level: "Contributor", badge: "🔵" },
-  { min: 200, max: 499, level: "Expert", badge: "🟣" },
-  { min: 500, max: Infinity, level: "Legend", badge: "🟡" },
+  { min: 0, max: 49, level: "Newcomer", badge: "🌱" },
+  { min: 50, max: 199, level: "Contributor", badge: "⚡" },
+  { min: 200, max: 499, level: "Expert", badge: "🔥" },
+  { min: 500, max: Infinity, level: "Legend", badge: "🏆" },
 ];
 
 function getLevel(reputation) {
@@ -50,6 +51,17 @@ function getLevel(reputation) {
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
 const getIo = (req) => req.app.get("io");
+
+/**
+ * Broadcast a lightweight event so every connected client (leaderboard sidebar,
+ * profile cards, etc.) knows to re-fetch reputation data for this user.
+ * Non-fatal — wrapped in try/catch so it never breaks the request.
+ */
+const emitReputationUpdated = (io, userId) => {
+  try {
+    io.emit("feed:reputation:updated", { userId: String(userId) });
+  } catch (_) {}
+};
 
 const toPlainReactions = (reactionMap) => {
   const reactionsObj = {};
@@ -276,6 +288,9 @@ const applyUpdatePayload = (post, body) => {
 };
 
 const getEffectiveSort = (tab, sort) => {
+  // Tab-driven views (trending, top) always use their own sort — the UI
+  // sort selector is irrelevant when a sort-defining tab is active.
+  if (tab === "trending" || tab === "top") return SORT_PRESETS[tab];
   if (sort && SORT_PRESETS[sort]) return SORT_PRESETS[sort];
   if (tab && SORT_PRESETS[tab]) return SORT_PRESETS[tab];
   return SORT_PRESETS.latest;
@@ -418,6 +433,23 @@ exports.createPost = async (req, res) => {
       authorId: userId,
       postId: post._id,
     });
+
+    // Grant reputation for publishing a post (non-fatal)
+    try {
+      await User.findByIdAndUpdate(userId, [
+        {
+          $set: {
+            reputation: { $add: ["$reputation", FEED_REPUTATION.POST_CREATE] },
+          },
+        },
+      ]);
+      emitReputationUpdated(io, userId);
+    } catch (repErr) {
+      console.warn(
+        "createPost: reputation update failed (non-fatal):",
+        repErr.message,
+      );
+    }
 
     res.status(201).json(post);
   } catch (err) {
@@ -693,10 +725,18 @@ exports.getUserPosts = async (req, res) => {
 // ---------------------------------------------------------------------------
 exports.getTopContributors = async (req, res) => {
   try {
-    const users = await User.find({ reputation: { $gt: 0 } })
+    const users = await User.find({})
       .sort({ reputation: -1 })
       .limit(10)
       .select("name avatar reputation followers");
+
+    const userIds = users.map((u) => u._id);
+    const postCounts = await Post.aggregate([
+      { $match: { author: { $in: userIds }, isPrivate: false } },
+      { $group: { _id: "$author", count: { $sum: 1 } } },
+    ]);
+    const postCountMap = {};
+    for (const { _id, count } of postCounts) postCountMap[String(_id)] = count;
 
     const leaderboard = users.map((u) => {
       const { level, badge } = getLevel(u.reputation);
@@ -708,6 +748,7 @@ exports.getTopContributors = async (req, res) => {
         level,
         badge,
         followersCount: u.followers.length,
+        postCount: postCountMap[String(u._id)] ?? 0,
       };
     });
 
@@ -805,6 +846,7 @@ exports.reactToPost = async (req, res) => {
             },
           },
         ]);
+        emitReputationUpdated(io, fullPost.author);
       } catch (repErr) {
         console.warn(
           "reactToPost: reputation update failed (non-fatal):",
@@ -956,6 +998,7 @@ exports.createComment = async (req, res) => {
         await User.findByIdAndUpdate(fullPost.author, {
           $inc: { reputation: FEED_REPUTATION.QUESTION_BONUS },
         });
+        emitReputationUpdated(getIo(req), fullPost.author);
       }
     }
 
@@ -976,7 +1019,8 @@ exports.createComment = async (req, res) => {
         actorId: userId,
         data: {
           postId: postId,
-          postTitle: fullPost.type === "question" ? "your question" : "your post",
+          postTitle:
+            fullPost.type === "question" ? "your question" : "your post",
         },
       });
     }
@@ -1094,6 +1138,7 @@ exports.deleteComment = async (req, res) => {
         {
           commentId: id,
           postId: comment.post,
+          commentsCount: updatedPost?.commentsCount ?? 0,
         },
       );
     } catch (socketErr) {
@@ -1174,6 +1219,7 @@ exports.reactToComment = async (req, res) => {
             },
           },
         ]);
+        emitReputationUpdated(getIo(req), comment.author);
       } catch (repErr) {
         console.warn(
           "reactToComment: reputation update failed (non-fatal):",
@@ -1277,6 +1323,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
           commentId: null,
           resolved: false,
         });
+        emitReputationUpdated(getIo(req), comment.author);
         return res.json({ acceptedComment: null, status: "open" });
       }
 
@@ -1333,6 +1380,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
         commentId,
         resolved: true,
       });
+      emitReputationUpdated(getIo(req), comment.author);
 
       // ── Notification ─────────────────────────────────────────────
       if (comment.author.toString() !== userId) {
