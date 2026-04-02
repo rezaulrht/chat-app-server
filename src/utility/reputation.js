@@ -10,7 +10,8 @@ const User = require("../models/User");
  * @param {number} delta — positive to add, negative to subtract
  */
 async function awardReputation(userId, delta) {
-  if (!delta) return;
+  if (!userId) return;
+  if (typeof delta !== "number" || delta === 0) return;
 
   if (delta > 0) {
     // $inc treats missing/null field as 0 — always safe
