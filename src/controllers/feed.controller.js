@@ -1587,9 +1587,11 @@ exports.getPostReactions = async (req, res) => {
     if (access.error) {
       return res.status(access.error.status).json({ message: access.error.message });
     }
+    const post = access.post;
 
-    const post = await Post.findById(id);
-    if (!post) return res.status(404).json({ message: "Post not found" });
+    if (!post.reactions || post.reactions.size === 0) {
+      return res.json({ reactions: {}, total: 0 });
+    }
 
     // Collect all unique reactor IDs
     const allUserIds = new Set();
@@ -1632,6 +1634,10 @@ exports.getCommentReactions = async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
 
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Comment not found" });
+    }
+
     const comment = await Comment.findById(id);
     if (!comment) return res.status(404).json({ message: "Comment not found" });
 
@@ -1639,6 +1645,10 @@ exports.getCommentReactions = async (req, res) => {
     const access = await checkPostAccess(comment.post.toString(), userId);
     if (access.error) {
       return res.status(access.error.status).json({ message: access.error.message });
+    }
+
+    if (!comment.reactions || comment.reactions.size === 0) {
+      return res.json({ reactions: {}, total: 0 });
     }
 
     const allUserIds = new Set();
