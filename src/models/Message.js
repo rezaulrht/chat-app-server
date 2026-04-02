@@ -86,6 +86,13 @@ const messageSchema = new mongoose.Schema(
         size: { type: Number },
       },
     ],
+    // Group mentions: user IDs referenced in message text
+    mentions: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
     // Scheduled Messages
     scheduledFromId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -218,7 +225,6 @@ messageSchema.index({ replyTo: 1 });
 // Scheduled Messages
 messageSchema.index({ scheduledFromId: 1 }, { unique: true, sparse: true });
 
-
 // ──────────────────────────────────────────────────────────
 // Get total votes
 // ──────────────────────────────────────────────────────────
@@ -260,9 +266,8 @@ messageSchema.methods.getPollResults = function () {
       id: opt.id,
       text: opt.text,
       votes: voteCount,
-      percentage: totalVotes > 0
-        ? Math.round((voteCount / totalVotes) * 100)
-        : 0,
+      percentage:
+        totalVotes > 0 ? Math.round((voteCount / totalVotes) * 100) : 0,
     };
   });
 };

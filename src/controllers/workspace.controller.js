@@ -132,6 +132,9 @@ exports.listMyWorkspaces = async (req, res) => {
         createdBy: ws.createdBy,
         createdAt: ws.createdAt,
         categories: ws.categories || [],
+        roles: ws.roles || [],
+        inviteCode: ws.inviteCode || null,
+        inviteCodeExpiresAt: ws.inviteCodeExpiresAt || null,
       };
     });
 
@@ -816,7 +819,7 @@ exports.revokeInvite = async (req, res) => {
   try {
     await Workspace.findByIdAndUpdate(req.workspace._id, {
       $unset: { inviteCode: "", inviteCodeExpiresAt: "" },
-    });
+    }, { new: true });
 
     res.json({ message: "Invite link revoked" });
   } catch (err) {
@@ -913,7 +916,7 @@ exports.updateCategory = async (req, res) => {
       req.workspace._id,
       { $set: updateFields },
       {
-        returnDocument: 'after',
+        new: true,
         arrayFilters: [{ "cat._id": category._id }],
         runValidators: true,
       },
@@ -950,7 +953,7 @@ exports.deleteCategory = async (req, res) => {
 
     await Workspace.findByIdAndUpdate(req.workspace._id, {
       $pull: { categories: { _id: category._id } },
-    });
+    }, { new: true });
 
     const io = req.app.get("io");
     io.to(`workspace:${req.workspace._id}`).emit("workspace:category-deleted", {
@@ -973,7 +976,7 @@ exports.deleteCategory = async (req, res) => {
 exports.createRole = async (req, res) => {
   try {
     const workspace = req.workspace;
-    const { name, color, permissions } = req.body;
+    const { name, color, permissions, isHoisted } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ message: "Role name is required" });
@@ -1048,7 +1051,7 @@ exports.updateRole = async (req, res) => {
     const updated = await Workspace.findByIdAndUpdate(
       workspace._id,
       { $set: updateFields },
-      { new: true, arrayFilters: [{ "r._id": role._id }] },
+      { new: true, runValidators: true, arrayFilters: [{ "r._id": role._id }] },
     );
     const updatedRole = updated.roles.id(roleId);
 

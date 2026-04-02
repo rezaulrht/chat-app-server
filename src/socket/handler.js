@@ -52,6 +52,19 @@ const socketHandler = (io) => {
       return;
     }
 
+    // Cache basic profile on the socket for lightweight event payloads
+    try {
+      const currentUser = await User.findById(socket.userId)
+        .select("name username avatar")
+        .lean();
+      socket.userName = currentUser?.name || currentUser?.username || "Someone";
+      socket.userAvatar = currentUser?.avatar || null;
+    } catch (err) {
+      socket.userName = "Someone";
+      socket.userAvatar = null;
+      console.error("Socket user profile lookup error:", err.message);
+    }
+
     console.log(`✅ User connected: ${socket.id} (userId: ${socket.userId})`);
     socket.join(`feed:user:${socket.userId}`);
     socket.join(`user:${socket.userId}`);

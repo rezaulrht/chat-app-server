@@ -54,10 +54,10 @@ const checkMembership = async (res, workspaceId, userId) => {
 const computePermissions = (workspace, memberRecord, module) => {
   const { PERMISSIONS } = Workspace;
   const isOwner = memberRecord.role === "owner";
-  
+
   // Default permissions if they have no custom roles
   const basePerms = new Set();
-  
+
   if (isOwner) {
     // Owners have everything natively
     Object.values(PERMISSIONS).forEach((p) => basePerms.add(p));
@@ -67,8 +67,10 @@ const computePermissions = (workspace, memberRecord, module) => {
   // 1. Gather all base permissions from the user's roles
   if (memberRecord.roleIds && memberRecord.roleIds.length > 0) {
     const roleIdsStr = memberRecord.roleIds.map(String);
-    const userRoles = workspace.roles.filter((r) => roleIdsStr.includes(r._id.toString()));
-    
+    const userRoles = workspace.roles.filter((r) =>
+      roleIdsStr.includes(r._id.toString()),
+    );
+
     userRoles.forEach((role) => {
       role.permissions?.forEach((p) => basePerms.add(p));
     });
@@ -76,8 +78,9 @@ const computePermissions = (workspace, memberRecord, module) => {
     // Legacy support for pure 'admin' string role
     basePerms.add(PERMISSIONS.ADMINISTRATOR);
   } else {
-    // Default member fallback (if no roles are assigned at all)
-    // They can view channels and send messages by default
+    // Default member fallback
+    // This runs when roleIds is empty AND role is not "admin" or "owner"
+    // Basic members can view channels and send messages by default
     basePerms.add(PERMISSIONS.VIEW_CHANNEL);
     basePerms.add(PERMISSIONS.SEND_MESSAGES);
   }
@@ -89,17 +92,23 @@ const computePermissions = (workspace, memberRecord, module) => {
   }
 
   // 2. Apply module-specific Permission Overrides if they exist
-  if (module && module.permissionOverrides && module.permissionOverrides.length > 0) {
+  if (
+    module &&
+    module.permissionOverrides &&
+    module.permissionOverrides.length > 0
+  ) {
     const roleIdStrings = memberRecord.roleIds?.map(String) || [];
-    
+
     // a. Apply role-based overrides first
-    const roleOverrides = module.permissionOverrides.filter((ov) => 
-      ov.targetType === "role" && roleIdStrings.includes(ov.targetId.toString())
+    const roleOverrides = module.permissionOverrides.filter(
+      (ov) =>
+        ov.targetType === "role" &&
+        roleIdStrings.includes(ov.targetId.toString()),
     );
 
     const denyRoles = new Set();
     const allowRoles = new Set();
-    
+
     roleOverrides.forEach((ov) => {
       ov.deny?.forEach((p) => denyRoles.add(p));
       ov.allow?.forEach((p) => allowRoles.add(p));
@@ -110,8 +119,10 @@ const computePermissions = (workspace, memberRecord, module) => {
     allowRoles.forEach((p) => basePerms.add(p));
 
     // b. Apply member-based overrides (takes precedence over roles)
-    const memberOverride = module.permissionOverrides.find((ov) => 
-      ov.targetType === "member" && ov.targetId.toString() === memberRecord.user.toString()
+    const memberOverride = module.permissionOverrides.find(
+      (ov) =>
+        ov.targetType === "member" &&
+        ov.targetId.toString() === memberRecord.user.toString(),
     );
 
     if (memberOverride) {
@@ -151,7 +162,15 @@ exports.createModule = async (req, res) => {
     }
 
     // ── 3. Validate name ─────────────────────────────────────────
-    const { name, description, type, category, position, isPrivate, permissionOverrides } = req.body;
+    const {
+      name,
+      description,
+      type,
+      category,
+      position,
+      isPrivate,
+      permissionOverrides,
+    } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ message: "Module name is required" });
     }
@@ -240,10 +259,12 @@ exports.listModules = async (req, res) => {
     const { workspace, memberRecord } = result;
 
     // ── 3. Fetch and sort modules ────────────────────────────────
-    const modules = await Module.find({ workspaceId }).sort({
-      category: 1,
-      position: 1,
-    });
+    const modules = await Module.find({ workspaceId })
+      .populate("activeParticipants.userId", "name avatar")
+      .sort({
+        category: 1,
+        position: 1,
+      });
 
     // ── 4 & 5. Filter private + inject myUnread ──────────────────
     const accessible = modules
@@ -348,7 +369,14 @@ exports.updateModule = async (req, res) => {
     }
 
     // ── 3. Check at least one field provided ─────────────────────
-    const { name, description, type, category, isPrivate, permissionOverrides } = req.body;
+    const {
+      name,
+      description,
+      type,
+      category,
+      isPrivate,
+      permissionOverrides,
+    } = req.body;
     const hasAny =
       name !== undefined ||
       description !== undefined ||
@@ -468,9 +496,10 @@ exports.deleteModule = async (req, res) => {
     // ── 2c. Permission check (MANAGE_CHANNELS required) ──────────
     const perms = computePermissions(workspace, memberRecord, module);
     if (!perms.has(Workspace.PERMISSIONS.MANAGE_CHANNELS)) {
-      return res
-        .status(403)
-        .json({ message: "Only members with Manage Channels permission can delete modules" });
+      return res.status(403).json({
+        message:
+          "Only members with Manage Channels permission can delete modules",
+      });
     }
 
     // ── 3. Emit before deletion ──────────────────────────────────
@@ -590,6 +619,9 @@ exports.getModuleMessages = async (req, res) => {
     // ── 3. Private module check ──────────────────────────────────
     const perms = computePermissions(workspace, memberRecord, module);
     if (!perms.has(Workspace.PERMISSIONS.VIEW_CHANNEL)) {
+      if (process.env.DEBUG_PERMS) {
+        console.log(`[getModuleMessages] Access denied for module ${moduleId}`);
+      }
       return res.status(403).json({ message: "Access denied to this module" });
     }
 
@@ -711,25 +743,39 @@ exports.sendModuleMessage = async (req, res) => {
       return res.status(400).json({ message: "Invalid module ID" });
     }
 
+    // ── 2. Membership check ──────────────────────────────────────
+    const result = await checkMembership(res, workspaceId, req.user.id);
+    if (!result) return;
+    const { workspace, memberRecord } = result;
+
+    // ── 2b. Fetch module ─────────────────────────────────────────
+    const module = await Module.findOne({ _id: moduleId, workspaceId });
+    if (!module) {
+      return res.status(404).json({ message: "Module not found" });
+    }
+
     // ── 3. Check access & permissions ──────────────────────────────
     const perms = computePermissions(workspace, memberRecord, module);
-    
+
     if (!perms.has(Workspace.PERMISSIONS.VIEW_CHANNEL)) {
       return res.status(403).json({ message: "Access denied to this module" });
     }
 
     if (!perms.has(Workspace.PERMISSIONS.SEND_MESSAGES)) {
-      return res.status(403).json({ message: "You do not have permission to send messages here" });
+      return res
+        .status(403)
+        .json({ message: "You do not have permission to send messages here" });
     }
 
     if (
-      module.type === "announcement" && 
-      !perms.has(Workspace.PERMISSIONS.MANAGE_MESSAGES) && 
+      module.type === "announcement" &&
+      !perms.has(Workspace.PERMISSIONS.MANAGE_MESSAGES) &&
       !perms.has(Workspace.PERMISSIONS.MANAGE_CHANNELS)
     ) {
-      return res
-        .status(403)
-        .json({ message: "Only members with Manage Messages permission can post in announcements" });
+      return res.status(403).json({
+        message:
+          "Only members with Manage Messages permission can post in announcements",
+      });
     }
 
     // ── 4 & 5. Validate content ──────────────────────────────────
@@ -744,14 +790,16 @@ exports.sendModuleMessage = async (req, res) => {
         return res.status(400).json({ message: "Message content is required" });
       }
     }
-    
+
     // ── 6. Parse mentions ────────────────────────────────────────
     let mentions = [];
     if (text) {
       // Get all workspace members to match names against text
-      const wsForMentions = await Workspace.findById(workspaceId).select("members roles").populate("members.user", "name");
+      const wsForMentions = await Workspace.findById(workspaceId)
+        .select("members roles")
+        .populate("members.user", "name");
       const availableMembers = wsForMentions.members
-        .filter(m => m.user && m.user.name)
+        .filter((m) => m.user && m.user.name)
         .sort((a, b) => b.user.name.length - a.user.name.length);
 
       const mentionIds = new Set();
@@ -1051,11 +1099,12 @@ exports.deleteModuleMessage = async (req, res) => {
     if (forEveryone) {
       const perms = computePermissions(workspace, memberRecord, module);
       const isSender = message.sender.toString() === req.user.id;
-      
+
       // Only sender or someone with MANAGE_MESSAGES can delete for everyone
       if (!isSender && !perms.has(Workspace.PERMISSIONS.MANAGE_MESSAGES)) {
         return res.status(403).json({
-          message: "Only the sender or members with Manage Messages permission can delete for everyone",
+          message:
+            "Only the sender or members with Manage Messages permission can delete for everyone",
         });
       }
 

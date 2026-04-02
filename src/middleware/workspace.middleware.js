@@ -84,10 +84,10 @@ exports.isWorkspaceAdmin = (req, res, next) => {
   if (roleIds && roleIds.length > 0 && req.workspace.roles) {
     const roleIdsStr = roleIds.map(String);
     const userRoles = req.workspace.roles.filter((r) => roleIdsStr.includes(r._id.toString()));
-    
+
     for (const r of userRoles) {
       if (
-        r.permissions?.includes(PERMISSIONS.ADMINISTRATOR) || 
+        r.permissions?.includes(PERMISSIONS.ADMINISTRATOR) ||
         r.permissions?.includes(PERMISSIONS.MANAGE_WORKSPACE)
       ) {
         hasAdminPerms = true;
@@ -100,6 +100,87 @@ exports.isWorkspaceAdmin = (req, res, next) => {
     return res
       .status(403)
       .json({ message: "Only workspace admins can perform this action" });
+  }
+
+  next();
+};
+
+// ---------------------------------------------------------------------------
+// isWorkspaceRoleManager
+// Ensures the authenticated user can manage custom roles.
+// Allows owners/admins plus custom roles with ADMINISTRATOR, MANAGE_WORKSPACE, or MANAGE_ROLES.
+// ---------------------------------------------------------------------------
+exports.isWorkspaceRoleManager = (req, res, next) => {
+  const { role, roleIds } = req.memberRecord;
+  const { PERMISSIONS } = Workspace;
+
+  if (role === "owner" || role === "admin") {
+    return next();
+  }
+
+  let hasRolePerms = false;
+  if (roleIds && roleIds.length > 0 && req.workspace.roles) {
+    const roleIdsStr = roleIds.map(String);
+    const userRoles = req.workspace.roles.filter((r) =>
+      roleIdsStr.includes(r._id.toString()),
+    );
+
+    for (const r of userRoles) {
+      if (
+        r.permissions?.includes(PERMISSIONS.ADMINISTRATOR) ||
+        r.permissions?.includes(PERMISSIONS.MANAGE_WORKSPACE) ||
+        r.permissions?.includes(PERMISSIONS.MANAGE_ROLES)
+      ) {
+        hasRolePerms = true;
+        break;
+      }
+    }
+  }
+
+  if (!hasRolePerms) {
+    return res
+      .status(403)
+      .json({ message: "Only workspace role managers can perform this action" });
+  }
+
+  next();
+};
+
+// ---------------------------------------------------------------------------
+// isWorkspaceMemberManager
+// Ensures the authenticated user can manage members (kick/ban/invite).
+// Allows owners/admins plus custom roles with ADMINISTRATOR or MANAGE_WORKSPACE.
+// ---------------------------------------------------------------------------
+exports.isWorkspaceMemberManager = (req, res, next) => {
+  const { role, roleIds } = req.memberRecord;
+  const { PERMISSIONS } = Workspace;
+
+  if (role === "owner" || role === "admin") {
+    return next();
+  }
+
+  let hasMemberPerms = false;
+  if (roleIds && roleIds.length > 0 && req.workspace.roles) {
+    const roleIdsStr = roleIds.map(String);
+    const userRoles = req.workspace.roles.filter((r) =>
+      roleIdsStr.includes(r._id.toString()),
+    );
+
+    for (const r of userRoles) {
+      if (
+        r.permissions?.includes(PERMISSIONS.ADMINISTRATOR) ||
+        r.permissions?.includes(PERMISSIONS.MANAGE_WORKSPACE)
+      ) {
+        hasMemberPerms = true;
+        break;
+      }
+    }
+  }
+
+  if (!hasMemberPerms) {
+    return res
+      .status(403)
+      .json({ message: "Only workspace member managers can perform this action" });
   }
 
   next();

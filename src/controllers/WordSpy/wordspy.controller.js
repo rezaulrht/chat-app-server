@@ -9,6 +9,45 @@ const DIFFICULTY_GUIDE = {
   hard: "very close, hints barely distinguish them (Kohli / Rohit)",
 };
 
+const FALLBACK_PAIRS = {
+  easy: [
+    ["Apple", "Mango"],
+    ["Lion", "Elephant"],
+    ["Pizza", "Burger"],
+    ["Cricket", "Football"],
+    ["Moon", "Sun"],
+  ],
+  medium: [
+    ["Paris", "London"],
+    ["Guitar", "Piano"],
+    ["Laptop", "Tablet"],
+    ["Tiger", "Leopard"],
+    ["Tea", "Coffee"],
+  ],
+  hard: [
+    ["Violin", "Viola"],
+    ["Crocodile", "Alligator"],
+    ["Mocha", "Latte"],
+    ["Falcon", "Hawk"],
+    ["SUV", "Crossover"],
+  ],
+};
+
+const pickFallbackWordPair = (category, difficulty) => {
+  const level = ["easy", "medium", "hard"].includes(difficulty)
+    ? difficulty
+    : "medium";
+  const list = FALLBACK_PAIRS[level];
+  const [realWord, impostorWord] =
+    list[Math.floor(Math.random() * list.length)] || ["Apple", "Mango"];
+
+  return {
+    realWord,
+    impostorWord,
+    reasoning: `Fallback pair used for category "${category}" at ${level} difficulty`,
+  };
+};
+
 const openRouterPost = async (messages, maxTokens = 300, temperature = 0.8) => {
   const { data } = await axios.post(
     `${OPENROUTER_BASE}/chat/completions`,
@@ -64,7 +103,12 @@ Return ONLY valid JSON, no markdown:
       raw = await openRouterPost([{ role: "user", content: prompt }], 5000, 0.8);
     } catch (retryErr) {
       console.error("[WordSpy AI] Retry also failed:", retryErr?.response?.status, retryErr?.response?.data || retryErr.message);
-      throw retryErr;
+      const fallback = pickFallbackWordPair(category, difficulty);
+      console.warn("[WordSpy AI] Falling back to local pair:", fallback);
+      return {
+        realWord: fallback.realWord,
+        impostorWord: fallback.impostorWord,
+      };
     }
   }
 
@@ -78,12 +122,22 @@ Return ONLY valid JSON, no markdown:
     parsed = JSON.parse(jsonStr);
   } catch (parseErr) {
     console.error("[WordSpy AI] JSON parse failed. Raw string was:", JSON.stringify(jsonStr));
-    throw new Error("AI returned non-JSON response");
+    const fallback = pickFallbackWordPair(category, difficulty);
+    console.warn("[WordSpy AI] Non-JSON response. Falling back to local pair:", fallback);
+    return {
+      realWord: fallback.realWord,
+      impostorWord: fallback.impostorWord,
+    };
   }
 
   if (!parsed?.realWord || !parsed?.impostorWord) {
     console.error("[WordSpy AI] Missing fields in parsed response:", parsed);
-    throw new Error("AI returned invalid word pair structure");
+    const fallback = pickFallbackWordPair(category, difficulty);
+    console.warn("[WordSpy AI] Invalid structure. Falling back to local pair:", fallback);
+    return {
+      realWord: fallback.realWord,
+      impostorWord: fallback.impostorWord,
+    };
   }
 
   console.log(`[WordSpy AI] Word pair generated: realWord="${parsed.realWord}", impostorWord="${parsed.impostorWord}"`);

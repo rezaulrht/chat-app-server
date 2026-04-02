@@ -8,6 +8,8 @@ const {
   isWorkspaceMember,
   isWorkspaceAdmin,
   isWorkspaceOwner,
+  isWorkspaceRoleManager,
+  isWorkspaceMemberManager,
 } = require("../middleware/workspace.middleware");
 
 const {
@@ -116,7 +118,7 @@ router.post(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceMemberManager,
   addMembers,
 );
 
@@ -129,7 +131,7 @@ router.delete(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceMemberManager,
   removeMembers,
 );
 
@@ -142,7 +144,7 @@ router.patch(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceRoleManager,
   updateMemberRole,
 );
 
@@ -168,7 +170,7 @@ router.post(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceMemberManager,
   generateInvite,
 );
 
@@ -180,7 +182,7 @@ router.delete(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceMemberManager,
   revokeInvite,
 );
 
@@ -195,7 +197,7 @@ router.post(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceMemberManager,
   addCategory,
 );
 
@@ -208,7 +210,7 @@ router.patch(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceMemberManager,
   updateCategory,
 );
 
@@ -220,7 +222,7 @@ router.delete(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceMemberManager,
   deleteCategory,
 );
 
@@ -235,7 +237,7 @@ router.post(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceRoleManager,
   createRole,
 );
 
@@ -247,7 +249,7 @@ router.patch(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceRoleManager,
   updateRole,
 );
 
@@ -259,7 +261,7 @@ router.delete(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceRoleManager,
   deleteRole,
 );
 
@@ -272,14 +274,14 @@ router.patch(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceRoleManager,
   assignRolesToMember,
 );
 
 // @route   POST /api/workspaces/:workspaceId/join-public
 // @desc    Join a public workspace without an invite code
 // @access  Any authenticated user
-router.post("/:workspaceId/join-public", validateWorkspaceId, auth, joinPublicWorkspace);
+router.post("/:workspaceId/join-public", validateWorkspaceId, joinPublicWorkspace);
 
 // @route   GET /api/workspaces/:workspaceId/bans
 // @desc    List all banned users in a workspace
@@ -289,7 +291,7 @@ router.get(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceMemberManager,
   getBannedUsers,
 );
 
@@ -301,7 +303,7 @@ router.post(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceMemberManager,
   banMember,
 );
 
@@ -313,7 +315,7 @@ router.delete(
   validateWorkspaceId,
   loadWorkspace,
   isWorkspaceMember,
-  isWorkspaceAdmin,
+  isWorkspaceMemberManager,
   unbanMember,
 );
 

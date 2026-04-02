@@ -49,13 +49,51 @@ const userSchema = new mongoose.Schema(
     // Profile extras
     bio: {
       type: String,
-      maxlength: 160,
+      maxlength: 500,
       default: "",
+    },
+    displayName: {
+      type: String,
+      default: null,
     },
     statusMessage: {
       type: String,
       maxlength: 80,
       default: "",
+    },
+
+    // ── Banner management ────────────────────────────────────────────
+    banner: {
+      imageUrl: {
+        type: String,
+        default: null,
+      },
+      cropData: {
+        x: { type: Number, default: 0 },
+        y: { type: Number, default: 0 },
+        width: { type: Number, default: 0 },
+        height: { type: Number, default: 0 },
+      },
+    },
+    bannerColor: {
+      type: String,
+      default: null,
+    },
+
+    // ── Social Connections ──────────────────────────────────────────
+    socialConnections: {
+      github: {
+        providerId: String,
+        username: String,
+        url: String,
+        connectedAt: Date,
+      },
+      google: {
+        providerId: String,
+        username: String,
+        url: String,
+        connectedAt: Date,
+      },
     },
 
     // resetToken
@@ -94,13 +132,13 @@ const userSchema = new mongoose.Schema(
 
     // ── Notification preferences ─────────────────────────────────────────────
     notificationPrefs: {
-      chat_message:     { type: Boolean, default: true },
-      chat_mention:     { type: Boolean, default: true },
-      call_missed:      { type: Boolean, default: true },
-      feed_reaction:    { type: Boolean, default: true },
-      feed_comment:     { type: Boolean, default: true },
-      feed_follow:      { type: Boolean, default: true },
-      workspace_mention:{ type: Boolean, default: true },
+      chat_message: { type: Boolean, default: true },
+      chat_mention: { type: Boolean, default: true },
+      call_missed: { type: Boolean, default: true },
+      feed_reaction: { type: Boolean, default: true },
+      feed_comment: { type: Boolean, default: true },
+      feed_follow: { type: Boolean, default: true },
+      workspace_mention: { type: Boolean, default: true },
     },
   },
   { timestamps: true },

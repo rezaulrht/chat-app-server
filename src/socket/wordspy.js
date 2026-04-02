@@ -530,6 +530,78 @@ const registerWordSpyHandlers = (socket, { io, emitToUser }) => {
   });
 
   // ================================================================
+  // wordspy:leave — non-host player leaves current game
+  // ================================================================
+  socket.on("wordspy:leave", async () => {
+    try {
+      const game = await WordSpyGame.findOne({
+        "players.userId": socket.userId,
+        phase: { $nin: ["results"] },
+      });
+      if (!game) return;
+
+      if (String(game.hostId) === String(socket.userId)) {
+        return socket.emit("wordspy:error", {
+          message: "Host cannot leave. Disband the room instead.",
+        });
+      }
+
+      const beforeCount = game.players.length;
+      game.players = game.players.filter(
+        (p) => p.userId.toString() !== String(socket.userId),
+      );
+
+      if (game.players.length === beforeCount) return;
+
+      // Best-effort cleanup of per-player rate-limit buckets for this game.
+      hintRateLimits.delete(`${game._id}:${socket.userId}`);
+      voteRateLimits.delete(`${game._id}:${socket.userId}`);
+
+      await game.save();
+
+      socket.leave(`wordspy:${game._id}`);
+      socket.emit("wordspy:left", { message: "You left the game." });
+
+      // If no players remain, end the room entirely.
+      if (game.players.length === 0) {
+        clearPhaseTimer(game._id);
+        await WordSpyGame.findByIdAndDelete(game._id);
+        return;
+      }
+
+      const connectedCount = game.players.filter((p) => p.isConnected).length;
+      if (
+        connectedCount < 3 &&
+        !["lobby", "reveal", "results"].includes(game.phase)
+      ) {
+        await cancelRoundAndBackToLobby(io, game);
+        return;
+      }
+
+      // Check early-advance conditions after a player leaves.
+      if (game.phase === "hint") {
+        const connected = game.players.filter((p) => p.isConnected);
+        if (connected.length > 0 && connected.every((p) => p.hint)) {
+          lockHintsAndAdvance(io, game._id);
+          return;
+        }
+      }
+      if (game.phase === "vote") {
+        const connected = game.players.filter((p) => p.isConnected);
+        if (connected.length > 0 && connected.every((p) => p.vote)) {
+          tallyVotesAndReveal(io, game._id);
+          return;
+        }
+      }
+
+      broadcastRoomUpdate(io, game);
+    } catch (err) {
+      console.error("wordspy:leave error:", err.message);
+      socket.emit("wordspy:error", { message: "Failed to leave game" });
+    }
+  });
+
+  // ================================================================
   // wordspy:end:game — host only, reveal phase only
   // ================================================================
   socket.on("wordspy:end:game", async () => {

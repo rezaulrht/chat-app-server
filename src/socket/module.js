@@ -18,6 +18,8 @@
 const Workspace = require("../models/Workspace");
 const Module = require("../models/Module");
 const ModuleMessage = require("../models/ModuleMessage");
+const User = require("../models/User");
+const NotificationService = require("../services/notification.service");
 const { DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const r2Client = require("../config/r2");
 
@@ -28,10 +30,48 @@ async function deleteR2Attachments(attachments) {
       const key = att.publicId;
       if (!key) return Promise.resolve();
       return r2Client.send(
-        new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key })
+        new DeleteObjectCommand({
+          Bucket: process.env.R2_BUCKET_NAME,
+          Key: key,
+        }),
       );
-    })
+    }),
   );
+}
+
+function sanitizeMentionIds(mentions, allowedIds = [], senderId) {
+  if (!Array.isArray(mentions) || mentions.length === 0) return [];
+  const allowed = new Set(allowedIds.map(String));
+  const normalized = new Set();
+
+  for (const mention of mentions) {
+    const id =
+      typeof mention === "object"
+        ? mention?._id?.toString() || mention?.id?.toString()
+        : mention?.toString?.();
+
+    if (!id) continue;
+    if (senderId && id === senderId.toString()) continue;
+    if (allowed.size > 0 && !allowed.has(id)) continue;
+    normalized.add(id);
+  }
+
+  return Array.from(normalized);
+}
+
+async function parseMentionsByName(text, participants, senderId) {
+  if (!text) return [];
+  const mentioned = new Set();
+  const sorted = [...participants].sort(
+    (a, b) => b.name.length - a.name.length,
+  );
+  for (const p of sorted) {
+    if (p._id.toString() === senderId) continue;
+    if (text.toLowerCase().includes(`@${p.name.toLowerCase()}`)) {
+      mentioned.add(p._id.toString());
+    }
+  }
+  return Array.from(mentioned);
 }
 const mongoose = require("mongoose");
 
@@ -73,7 +113,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         );
         const isAdmin =
           memberRecord?.role === "owner" || memberRecord?.role === "admin";
-        const isAllowed = mod.allowedMembers
+        const isAllowed = (mod.allowedMembers || [])
           .map(String)
           .includes(socket.userId);
         const roleAllowed = mod.allowedRoles?.some((roleId) =>
@@ -98,13 +138,26 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
 
   socket.on(
     "module:message:send",
-    async ({ moduleId, workspaceId, text, gifUrl, tempId, replyTo, attachments, mentions }) => {
-      if (!moduleId || (!text?.trim() && !gifUrl && (!attachments || attachments.length === 0))) return;
+    async ({
+      moduleId,
+      workspaceId,
+      text,
+      gifUrl,
+      tempId,
+      replyTo,
+      attachments,
+      mentions,
+    }) => {
+      if (
+        !moduleId ||
+        (!text?.trim() && !gifUrl && (!attachments || attachments.length === 0))
+      )
+        return;
 
       try {
         // Verify module + membership
         const mod = await Module.findOne({ _id: moduleId, workspaceId }).select(
-          "workspaceId type isPrivate allowedMembers allowedRoles",
+          "workspaceId type name isPrivate allowedMembers allowedRoles",
         );
         if (!mod)
           return socket.emit("message:error", { message: "Module not found" });
@@ -125,7 +178,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         if (mod.isPrivate) {
           const isAdmin =
             memberRecord.role === "owner" || memberRecord.role === "admin";
-          const isAllowed = mod.allowedMembers
+          const isAllowed = (mod.allowedMembers || [])
             .map(String)
             .includes(socket.userId);
           const roleAllowed = mod.allowedRoles?.some((roleId) =>
@@ -147,6 +200,34 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
           }
         }
 
+        const safeMessageText = (text ?? "").trim();
+        const workspaceMemberIds = workspace.members.map((m) =>
+          m.user.toString(),
+        );
+        const mentionIdsFromPayload = sanitizeMentionIds(
+          mentions,
+          workspaceMemberIds,
+          socket.userId,
+        );
+
+        let mentionIdsFromText = [];
+        if (safeMessageText.includes("@")) {
+          const mentionCandidates = await User.find({
+            _id: { $in: workspaceMemberIds },
+          })
+            .select("_id name")
+            .lean();
+          mentionIdsFromText = await parseMentionsByName(
+            safeMessageText,
+            mentionCandidates,
+            socket.userId,
+          );
+        }
+
+        const finalMentionIds = Array.from(
+          new Set([...mentionIdsFromPayload, ...mentionIdsFromText]),
+        );
+
         // Validate replyTo
         if (replyTo) {
           const replyMsg = await ModuleMessage.findOne({
@@ -156,7 +237,6 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
           if (!replyMsg) return;
         }
 
-        const safeMessageText = (text ?? "").trim();
         // Create the message
         const message = await ModuleMessage.create({
           moduleId,
@@ -166,16 +246,20 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
           gifUrl: gifUrl || null,
           replyTo: replyTo || null,
           attachments: attachments || [],
-          mentions: mentions || [],
+          mentions: finalMentionIds,
         });
 
         // ── Handle Thread Metadata Update ────────────────────────────
         if (replyTo) {
-          const updatedReplyTo = await ModuleMessage.findByIdAndUpdate(replyTo, {
-            $inc: { replyCount: 1 },
-            $set: { lastReplyAt: message.createdAt },
-          }, { new: true });
-          
+          const updatedReplyTo = await ModuleMessage.findByIdAndUpdate(
+            replyTo,
+            {
+              $inc: { replyCount: 1 },
+              $set: { lastReplyAt: message.createdAt },
+            },
+            { new: true },
+          );
+
           // Emit thread update to the room
           io.to(`module:${moduleId}`).emit("module:message:thread:update", {
             messageId: replyTo,
@@ -231,17 +315,26 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         io.to(`module:${moduleId}`).emit("module:message:new", payload);
 
         // If there are mentions, loop and emit badge increment or toast
-        if (mentions && mentions.length > 0) {
-          mentions.forEach((uid) => {
-            if (uid !== socket.userId) {
-              emitToUser(uid, "module:mention", {
-                moduleId,
+        if (finalMentionIds.length > 0) {
+          for (const uid of finalMentionIds) {
+            await emitToUser(uid, "module:mention", {
+              moduleId,
+              workspaceId,
+              messageId: message._id,
+              sender: message.sender,
+            });
+
+            await NotificationService.push(emitToUser, {
+              recipientId: uid,
+              type: "workspace_mention",
+              actorId: socket.userId,
+              data: {
                 workspaceId,
-                messageId: message._id,
-                sender: message.sender,
-              });
-            }
-          });
+                moduleId,
+                moduleName: mod.name || "channel",
+              },
+            });
+          }
         }
 
         // Send unread:update to each other member
@@ -256,6 +349,11 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
               moduleId,
               workspaceId,
               unreadCount,
+              lastMessage: {
+                text: gifUrl ? "GIF" : safeMessageText,
+                sender: socket.userId,
+                timestamp: message.createdAt,
+              },
             });
           }
         }
@@ -462,14 +560,19 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
       );
       if (!memberRecord) return;
 
-      const isAdmin = memberRecord.role === "owner" || memberRecord.role === "admin";
-      
+      const isAdmin =
+        memberRecord.role === "owner" || memberRecord.role === "admin";
+
       const hasManageMessages = (workspace.roles || [])
-        .filter((r) => memberRecord.roleIds?.map(String).includes(r._id.toString()))
+        .filter((r) =>
+          memberRecord.roleIds?.map(String).includes(r._id.toString()),
+        )
         .some((r) => r.permissions?.includes("MANAGE_MESSAGES"));
 
       if (!isAdmin && !hasManageMessages) {
-        return socket.emit("message:error", { message: "Permission denied to pin messages" });
+        return socket.emit("message:error", {
+          message: "Permission denied to pin messages",
+        });
       }
 
       const newPinStatus = !message.isPinned;
@@ -522,7 +625,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         );
         const isAdmin =
           memberRecord?.role === "owner" || memberRecord?.role === "admin";
-        const isAllowed = mod.allowedMembers
+        const isAllowed = (mod.allowedMembers || [])
           .map(String)
           .includes(socket.userId);
         const roleAllowed = mod.allowedRoles?.some((roleId) =>
@@ -538,6 +641,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
     const typingPayload = {
       moduleId,
       userId: socket.userId,
+      userName: socket.userName || "Someone",
       isTyping: true,
     };
 
@@ -573,6 +677,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
     socket.to(`module:${moduleId}`).emit("module:typing:update", {
       moduleId,
       userId: socket.userId,
+      userName: socket.userName || "Someone",
       isTyping: false,
     });
   });
@@ -603,7 +708,7 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         );
         const isAdmin =
           memberRecord?.role === "owner" || memberRecord?.role === "admin";
-        const isAllowed = mod.allowedMembers
+        const isAllowed = (mod.allowedMembers || [])
           .map(String)
           .includes(socket.userId);
         const roleAllowed = mod.allowedRoles?.some((roleId) =>
@@ -622,34 +727,6 @@ const registerModuleHandlers = (socket, { emitToUser, io }) => {
         moduleId,
         workspaceId: mod.workspaceId,
         unreadCount: 0,
-      });
-
-      if (!lastSeenMessageId) return;
-
-      // Find pivot message timestamp for range update
-      const pivot = await ModuleMessage.findOne({
-        _id: lastSeenMessageId,
-        moduleId,
-      }).select("createdAt");
-      if (!pivot) return;
-
-      const seenAt = new Date();
-
-      // Mark all messages up to pivot as read by this user
-      await ModuleMessage.updateMany(
-        {
-          moduleId,
-          "readBy.user": { $ne: socket.userId },
-          createdAt: { $lte: pivot.createdAt },
-        },
-        { $addToSet: { readBy: { user: socket.userId, readAt: seenAt } } },
-      );
-
-      io.to(`module:${moduleId}`).emit("module:message:status", {
-        moduleId,
-        status: "read",
-        upToMessageId: lastSeenMessageId,
-        readBy: { userId: socket.userId, readAt: seenAt },
       });
     } catch (err) {
       console.error("module:seen error:", err.message);

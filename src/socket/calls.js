@@ -31,7 +31,10 @@ const registerCallHandlers = (socket, { emitToUser, io }) => {
   // call:declined - Recipient declines the call
   socket.on("call:declined", async ({ callId }) => {
     try {
-      const callLog = await CallLog.findById(callId).populate("initiator", "name");
+      const callLog = await CallLog.findById(callId).populate(
+        "initiator",
+        "name",
+      );
       if (!callLog) return;
 
       callLog.participants.push({ userId: socket.userId, status: "declined" });
@@ -53,7 +56,9 @@ const registerCallHandlers = (socket, { emitToUser, io }) => {
         });
       }
 
-      await emitToUser(callLog.initiator._id.toString(), "call:declined", { callId });
+      await emitToUser(callLog.initiator._id.toString(), "call:declined", {
+        callId,
+      });
 
       // Notify the recipient (socket.userId) that they missed a call from the initiator
       const { emitToUser: emitFn } = createHelpers(io);
@@ -71,33 +76,75 @@ const registerCallHandlers = (socket, { emitToUser, io }) => {
   // call:ended - Any participant ends the call
   socket.on("call:ended", async ({ callId }) => {
     try {
-      const callLog = await CallLog.findById(callId).populate("initiator", "_id");
-      if (!callLog || callLog.status !== "active") return;
+      const callLog = await CallLog.findById(callId).populate(
+        "initiator",
+        "_id",
+      );
+      if (!callLog) return;
 
-      const duration = Math.floor((Date.now() - callLog.startedAt) / 1000);
-      callLog.endedAt = new Date();
-      callLog.duration = duration;
-      callLog.status = "ended";
-      await callLog.save();
+      const alreadyEnded = callLog.status !== "active";
+      const duration =
+        callLog.duration ||
+        (callLog.startedAt
+          ? Math.floor(
+              (Date.now() - new Date(callLog.startedAt).getTime()) / 1000,
+            )
+          : 0);
 
+      // Only update DB if still active
+      if (!alreadyEnded) {
+        callLog.endedAt = new Date();
+        callLog.duration = duration;
+        callLog.status = "ended";
+        await callLog.save();
+
+        if (callLog.conversationId) {
+          const callMessage = await Message.create({
+            conversationId: callLog.conversationId,
+            sender: callLog.initiator._id,
+            callLog: {
+              callType: callLog.callType,
+              duration,
+              status: "ended",
+              initiator: callLog.initiator._id,
+              participants: callLog.participants.map((p) => p.userId),
+            },
+          });
+
+          // Populate sender so the client can render it immediately
+          await callMessage.populate("sender", "name avatar");
+
+          // Push to chat in real time — same event ChatWindow listens to
+          io.to(`conv:${callLog.conversationId}`).emit(
+            "message:new",
+            callMessage.toObject(),
+          );
+        }
+      }
+
+      // Always notify all participants so both sides clear the call UI
       if (callLog.conversationId) {
-        await Message.create({
-          conversationId: callLog.conversationId,
-          sender: callLog.initiator._id,
-          callLog: {
-            callType: callLog.callType,
-            duration,
-            status: "ended",
-            initiator: callLog.initiator._id,
-            participants: callLog.participants.map((p) => p.userId),
-          },
+        io.to(`conv:${callLog.conversationId}`).emit("call:ended", {
+          callId,
+          duration,
         });
-        io.to(`conv:${callLog.conversationId}`).emit("call:ended", { callId, duration });
       } else {
-        // Workspace call — notify each participant directly
+        const initiatorIdStr = callLog.initiator._id.toString();
+        const participantIds = new Set(
+          callLog.participants.map((p) => p.userId.toString()),
+        );
+
         callLog.participants.forEach((p) => {
           io.to(`user:${p.userId}`).emit("call:ended", { callId, duration });
         });
+
+        // Notify initiator only if not already in participants list
+        if (!participantIds.has(initiatorIdStr)) {
+          io.to(`user:${initiatorIdStr}`).emit("call:ended", {
+            callId,
+            duration,
+          });
+        }
       }
     } catch (error) {
       console.error("call:ended error:", error);

@@ -2,6 +2,29 @@ const passport = require("passport");
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
 const GitHubStrategy = require("passport-github2").Strategy;
 const User = require("../models/User");
+const { linkSocialAccountToExisting } = require("../services/accountMerge.service");
+
+/**
+ * Find existing user by provider-specific ID
+ * Checks socialConnections[provider].providerId and legacy provider/providerId
+ * @returns {Object|null} User document or null
+ */
+async function findUserByProviderId(provider, providerId) {
+    if (!providerId) return null;
+
+    // Check socialConnections[provider].providerId
+    const user = await User.findOne({
+        [`socialConnections.${provider}.providerId`]: providerId
+    });
+    if (user) return user;
+
+    // Check legacy root-level provider/providerId (for migration)
+    const legacyUser = await User.findOne({
+        provider: provider,
+        providerId: providerId
+    });
+    return legacyUser;
+}
 
 // Google Strategy
 passport.use(
@@ -29,36 +52,38 @@ passport.use(
             if (avatar) avatar = avatar.replace(/=s\d+[^"']*/g, "");
 
             try {
-                // Find user by Google ID or Email
-                let user = await User.findOne({
-                    $or: [{ providerId: id }, { email }]
-                });
+                // Step 1: Try to find by provider-specific ID first
+                let existingUser = await findUserByProviderId("google", id);
+                let justMerged = false;
+                let mergeMessage = "";
 
-                if (user) {
-                    // Always refresh avatar from the latest OAuth profile
-                    if (avatar) user.avatar = avatar;
-                    if (!user.providerId) {
-                        user.provider = "google";
-                        user.providerId = id;
-                        user.isVerified = true;
+                if (existingUser) {
+                    // User found by provider ID - update avatar if needed
+                    if (avatar && !existingUser.avatar) {
+                        existingUser.avatar = avatar;
+                        await existingUser.save();
                     }
-                    await user.save();
-                    return done(null, user);
+                    done(null, existingUser);
+                    return;
                 }
 
-                // Create new user if they don't exist
-                user = new User({
-                    name: displayName || "Google User",
+                // Step 2: Fall back to email-based lookup (for account merging)
+                const result = await linkSocialAccountToExisting(
                     email,
-                    avatar,
-                    provider: "google",
-                    providerId: id,
-                    isVerified: true,
-                });
+                    "google",
+                    id,
+                    { name: displayName, avatar, username: displayName }
+                );
 
-                await user.save();
-                console.log(`Created new Google user: ${email}`);
-                done(null, user);
+                // Track merge info for OAuth callback
+                justMerged = result.merged;
+                mergeMessage = result.message;
+
+                // Attach merge info for OAuth callback to use
+                result.user.justMerged = justMerged;
+                result.user.mergeMessage = mergeMessage;
+
+                done(null, result.user);
             } catch (err) {
                 console.error("Google Auth Error:", err);
                 done(err, null);
@@ -104,7 +129,9 @@ passport.use(
 
                         if (primaryEmail) {
                             email = primaryEmail.email;
-                            console.log(`Fetched private email for ${username}: ${email}`);
+                            if (process.env.NODE_ENV !== "production") {
+                                console.log(`Fetched private email for ${username}`);
+                            }
                         }
                     }
                 } catch (fetchErr) {
@@ -123,37 +150,38 @@ passport.use(
             if (avatar) avatar = avatar.replace(/[?&]v=\d+/g, "").replace(/&s=\d+/g, "");
 
             try {
-                // Find user by GitHub ID or Email
-                let user = await User.findOne({
-                    $or: [{ providerId: id }, { email }]
-                });
+                // Step 1: Try to find by provider-specific ID first
+                let existingUser = await findUserByProviderId("github", id);
+                let justMerged = false;
+                let mergeMessage = "";
 
-                if (user) {
-                    // Always refresh avatar from the latest OAuth profile so
-                    // stale/empty URLs self-heal on the next login.
-                    if (avatar) user.avatar = avatar;
-                    if (!user.providerId) {
-                        user.provider = "github";
-                        user.providerId = id;
-                        user.isVerified = true;
+                if (existingUser) {
+                    // User found by provider ID - update avatar if needed
+                    if (avatar && !existingUser.avatar) {
+                        existingUser.avatar = avatar;
+                        await existingUser.save();
                     }
-                    await user.save();
-                    return done(null, user);
+                    done(null, existingUser);
+                    return;
                 }
 
-                // Create new user if they don't exist
-                user = new User({
-                    name: displayName || username || "GitHub User",
+                // Step 2: Fall back to email-based lookup (for account merging)
+                const result = await linkSocialAccountToExisting(
                     email,
-                    avatar,
-                    provider: "github",
-                    providerId: id,
-                    isVerified: true,
-                });
+                    "github",
+                    id,
+                    { name: displayName || username || "GitHub User", avatar, username }
+                );
 
-                await user.save();
-                console.log(`Created new GitHub user: ${email}`);
-                done(null, user);
+                // Track merge info for OAuth callback
+                justMerged = result.merged;
+                mergeMessage = result.message;
+
+                // Attach merge info for OAuth callback to use
+                result.user.justMerged = justMerged;
+                result.user.mergeMessage = mergeMessage;
+
+                done(null, result.user);
             } catch (err) {
                 console.error("GitHub Auth Error:", err);
                 done(err, null);
