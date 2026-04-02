@@ -1283,6 +1283,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
       }
 
       // Clear previous accepted answer if exists
+      let previousAnswerAuthorId = null;
       if (previouslyAcceptedId) {
         const previousComment = await Comment.findByIdAndUpdate(
           previouslyAcceptedId,
@@ -1291,6 +1292,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
         ).session(session);
         if (previousComment) {
           await awardReputation(previousComment.author, -FEED_REPUTATION.ACCEPTED_ANSWER, { session });
+          previousAnswerAuthorId = previousComment.author;
         }
       }
 
@@ -1312,6 +1314,9 @@ exports.toggleAcceptedAnswer = async (req, res) => {
         resolved: true,
       });
       emitReputationUpdated(getIo(req), comment.author);
+      if (previousAnswerAuthorId) {
+        emitReputationUpdated(getIo(req), previousAnswerAuthorId);
+      }
 
       // ── Notification ─────────────────────────────────────────────
       if (comment.author.toString() !== userId) {
