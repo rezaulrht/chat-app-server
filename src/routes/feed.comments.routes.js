@@ -8,6 +8,7 @@ const {
     updateComment,
     deleteComment,
     reactToComment,
+    getCommentReactions,
 } = require("../controllers/feed.controller");
 
 router.use(auth);
@@ -17,5 +18,6 @@ router.post("/", createComment);
 router.patch("/:id", updateComment);
 router.delete("/:id", deleteComment);
 router.post("/:id/react", reactToComment);
+router.get("/:id/reactions", getCommentReactions);
 
 module.exports = router;

@@ -1573,3 +1573,100 @@ exports.searchFeed = async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 };
+
+// ---------------------------------------------------------------------------
+// GET /api/feed/posts/:id/reactions
+// Returns reactions map with user IDs populated to { _id, name, avatar }.
+// ---------------------------------------------------------------------------
+exports.getPostReactions = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    const access = await checkPostAccess(id, userId);
+    if (access.error) {
+      return res.status(access.error.status).json({ message: access.error.message });
+    }
+
+    const post = await Post.findById(id);
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    // Collect all unique reactor IDs
+    const allUserIds = new Set();
+    for (const users of post.reactions.values()) {
+      for (const uid of users) allUserIds.add(uid.toString());
+    }
+
+    // Batch-fetch user details
+    const users = await User.find(
+      { _id: { $in: [...allUserIds] } },
+      "name avatar"
+    ).lean();
+    const userMap = Object.fromEntries(
+      users.map((u) => [u._id.toString(), { _id: u._id, name: u.name, avatar: u.avatar }])
+    );
+
+    // Build populated map, drop emojis with no valid reactors
+    const populated = {};
+    let total = 0;
+    for (const [emoji, uids] of post.reactions.entries()) {
+      const reactors = uids.map((uid) => userMap[uid.toString()]).filter(Boolean);
+      if (reactors.length > 0) {
+        populated[emoji] = reactors;
+        total += reactors.length;
+      }
+    }
+
+    return res.json({ reactions: populated, total });
+  } catch (err) {
+    console.error("getPostReactions error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/feed/comments/:id/reactions
+// ---------------------------------------------------------------------------
+exports.getCommentReactions = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    const comment = await Comment.findById(id);
+    if (!comment) return res.status(404).json({ message: "Comment not found" });
+
+    // Check the parent post for privacy
+    const access = await checkPostAccess(comment.post.toString(), userId);
+    if (access.error) {
+      return res.status(access.error.status).json({ message: access.error.message });
+    }
+
+    const allUserIds = new Set();
+    for (const users of comment.reactions.values()) {
+      for (const uid of users) allUserIds.add(uid.toString());
+    }
+
+    const users = await User.find(
+      { _id: { $in: [...allUserIds] } },
+      "name avatar"
+    ).lean();
+    const userMap = Object.fromEntries(
+      users.map((u) => [u._id.toString(), { _id: u._id, name: u.name, avatar: u.avatar }])
+    );
+
+    const populated = {};
+    let total = 0;
+    for (const [emoji, uids] of comment.reactions.entries()) {
+      const reactors = uids.map((uid) => userMap[uid.toString()]).filter(Boolean);
+      if (reactors.length > 0) {
+        populated[emoji] = reactors;
+        total += reactors.length;
+      }
+    }
+
+    return res.json({ reactions: populated, total });
+  } catch (err) {
+    console.error("getCommentReactions error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
