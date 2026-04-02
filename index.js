@@ -122,6 +122,10 @@ socketHandler(io);
     await connectDB();
     console.log("MongoDB Connected");
 
+    // One-time reputation field migration (idempotent)
+    const { migrateReputation } = require("./src/utility/migrateReputation");
+    await migrateReputation();
+
     // Connect redis
     await connectRedis();
     console.log("Redis Connected");
