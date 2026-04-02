@@ -977,9 +977,7 @@ exports.createComment = async (req, res) => {
       );
       // Only increment reputation if the conditional update succeeded
       if (updated) {
-        await User.findByIdAndUpdate(fullPost.author, {
-          $inc: { reputation: FEED_REPUTATION.QUESTION_BONUS },
-        });
+        await awardReputation(fullPost.author, FEED_REPUTATION.QUESTION_BONUS);
         emitReputationUpdated(getIo(req), fullPost.author);
       }
     }
@@ -1087,9 +1085,7 @@ exports.deleteComment = async (req, res) => {
         post.acceptedComment,
       ).select("author");
       if (acceptedAuthor) {
-        await User.findByIdAndUpdate(acceptedAuthor.author, {
-          $inc: { reputation: -FEED_REPUTATION.ACCEPTED_ANSWER },
-        });
+        await awardReputation(acceptedAuthor.author, -FEED_REPUTATION.ACCEPTED_ANSWER);
       }
       await Post.findByIdAndUpdate(post._id, {
         acceptedComment: null,
