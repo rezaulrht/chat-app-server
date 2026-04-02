@@ -26,6 +26,7 @@ const notificationRoutes = require("./src/routes/notification.routes");
 const wordspyRoutes = require("./src/routes/WordSpy/wordspy.routes");
 const userRoutes = require("./src/routes/user.routes");
 const mongoose = require("mongoose");
+const { migrateReputation } = require("./src/utility/migrateReputation");
 
 const port = process.env.PORT || 3000;
 const app = express();
@@ -123,7 +124,6 @@ socketHandler(io);
     console.log("MongoDB Connected");
 
     // One-time reputation field migration (idempotent)
-    const { migrateReputation } = require("./src/utility/migrateReputation");
     await migrateReputation();
 
     // Connect redis
