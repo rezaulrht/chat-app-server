@@ -95,11 +95,6 @@ const socketHandler = (io) => {
       for (const conv of allConvs) {
         socket.join(`conv:${conv._id}`);
       }
-      if (allConvs.length > 0) {
-        console.log(
-          `🏠 User ${socket.userId} auto-joined ${allConvs.length} room(s)`,
-        );
-      }
     } catch (err) {
       console.error("Conversation room auto-join error:", err.message);
     }
@@ -112,11 +107,6 @@ const socketHandler = (io) => {
 
       for (const ws of userWorkspaces) {
         socket.join(`workspace:${ws._id}`);
-      }
-      if (userWorkspaces.length > 0) {
-        console.log(
-          `🏢 User ${socket.userId} auto-joined ${userWorkspaces.length} workspace room(s)`,
-        );
       }
     } catch (err) {
       console.error("Workspace room auto-join error:", err.message);
@@ -175,8 +165,6 @@ const socketHandler = (io) => {
               console.error(`Failed to update User.lastSeen for ${socket.userId}:`, dbErr.message);
             }
 
-            console.log(`Last seen saved for user ${socket.userId}: ${disconnectTime}`);
-
             await redisClient.del(`presence:${socket.userId}`);
 
             io.emit("presence:update", {
@@ -184,11 +172,6 @@ const socketHandler = (io) => {
               online: false,
               lastSeen: disconnectTime,
             });
-            console.log(`Presence:update emitted for user ${socket.userId} - OFFLINE`);
-          } else {
-            console.log(
-              `User ${socket.userId} still has ${remainingSockets} active socket(s) — staying online`,
-            );
           }
         } catch (err) {
           console.error("Redis disconnect error:", err);

@@ -216,18 +216,39 @@ exports.login = async (req, res) => {
 // @desc OAuth Callback
 exports.oauthCallback = async (req, res) => {
   try {
-    // Check if this is a social account linking flow
+    // Check if this is a social account linking flow using new OAuth state validation
     const state = req.query.state;
     let isLinking = false;
     let linkUserId = null;
+    let linkingProvider = null;
+    let stateProvided = false;
     
-    if (state && global.linkStates) {
-      const stateData = global.linkStates.get(state);
-      if (stateData && stateData.action === "link") {
+    if (state) {
+      stateProvided = true;
+      const { validateOAuthLinkState } = require("../utils/oauthState");
+      const validation = await validateOAuthLinkState(state);
+      
+      if (validation.valid && validation.data) {
         isLinking = true;
-        linkUserId = stateData.userId;
-        // Clean up the used state
-        global.linkStates.delete(state);
+        linkUserId = validation.data.userId;
+        linkingProvider = validation.data.provider;
+      } else if (validation.valid === false) {
+        // State was provided but invalid/expired - abort immediately
+        return res.redirect(`${process.env.SITE_URL}/profile?tab=connections&error=link_invalid`);
+      }
+    }
+    
+    // Handle OAuth cancellation/denial
+    const error = req.query.error;
+    const errorDescription = req.query.error_description || req.query.error_message;
+    
+    if (error === "access_denied" || error === "cancelled") {
+      if (isLinking) {
+        // User cancelled the account linking flow
+        return res.redirect(`${process.env.SITE_URL}/profile?tab=connections&cancelled=true`);
+      } else {
+        // Normal login failure - redirect to sign-in
+        return res.redirect(`${process.env.SITE_URL}/login?error=oauth_denied`);
       }
     }
     
@@ -240,13 +261,23 @@ exports.oauthCallback = async (req, res) => {
         return res.redirect(`${process.env.SITE_URL}/login-error?message=User not found`);
       }
       
-      // Get provider info from passport
-      const provider = req.user.provider || (req.user.google?.providerId ? "google" : "github");
-      const providerId = req.user.providerId || 
-        (req.user.google?.providerId) || 
-        (req.user.github?.providerId) ||
-        req.user.id;
-      const providerUsername = req.user.displayName || req.user.username || "";
+      // Get provider info from passport - use req.oauthProfile if available
+      let provider = linkingProvider;
+      let providerId = null;
+      let providerUsername = null;
+      
+      const oauthProfile = req.oauthProfile || req.user?.oauthProfile;
+      
+      if (oauthProfile && oauthProfile.provider) {
+        provider = oauthProfile.provider;
+        providerId = oauthProfile.providerId;
+        providerUsername = oauthProfile.username || oauthProfile.displayName || "";
+      } else if (req.user.id) {
+        // Fallback: try to guess from the OAuth response
+        provider = linkingProvider || "github";
+        providerId = req.user.id;
+        providerUsername = req.user.displayName || req.user.username || "";
+      }
       
       // Link the social account to the existing user
       if (!user.socialConnections) user.socialConnections = {};
@@ -286,7 +317,7 @@ exports.oauthCallback = async (req, res) => {
     
     res.redirect(redirectUrl);
   } catch (err) {
-    console.error(err.message);
+    console.error("OAuth callback error:", err.message);
     res.status(500).send("Server error");
   }
 };
@@ -369,6 +400,21 @@ exports.updateMe = async (req, res) => {
     }
 
     await user.save();
+
+    // Emit real-time update if statusMessage changed
+    if (statusMessage !== undefined) {
+      try {
+        const io = req.app.get("io");
+        if (io) {
+          io.emit("user:status:updated", {
+            userId: user._id.toString(),
+            statusMessage: user.statusMessage
+          });
+        }
+      } catch (e) {
+        console.error("Failed to emit status update:", e.message);
+      }
+    }
 
     const { password: _pw, ...safeUser } = user.toObject();
     res.json(safeUser);

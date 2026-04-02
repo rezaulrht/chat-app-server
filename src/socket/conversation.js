@@ -14,12 +14,6 @@ const registerConversationHandlers = (socket, { emitToUser, io }) => {
       // ✅ FIX: Only require conversationId, make lastSeenMessageId optional
       if (!conversationId) return;
 
-      console.log("👁️ conversation:seen received:", {
-        conversationId,
-        lastSeenMessageId,
-        userId: socket.userId,
-      });
-
       try {
         // Verify the requesting user is a participant
         const conversation = await Conversation.findOne({
@@ -36,22 +30,14 @@ const registerConversationHandlers = (socket, { emitToUser, io }) => {
           { new: true },
         );
 
-        console.log("✅ Unread count reset to 0 for user:", socket.userId);
-        console.log("   Updated conversation:", result?._id);
-
-        // ✅ Emit unread count update to frontend
+        // Emit unread count update to frontend
         await emitToUser(socket.userId, "unread:update", {
           conversationId,
           unreadCount: 0,
         });
 
-        console.log("✅ Emitted unread:update to user");
-
-        // ✅ Only mark messages as read if lastSeenMessageId is provided
+        // Only mark messages as read if lastSeenMessageId is provided
         if (!lastSeenMessageId) {
-          console.log(
-            "⚠️ No lastSeenMessageId provided, skipping message status update",
-          );
           return;
         }
 
@@ -62,7 +48,6 @@ const registerConversationHandlers = (socket, { emitToUser, io }) => {
         });
 
         if (!pivotMessage) {
-          console.log("❌ Pivot message not found:", lastSeenMessageId);
           return;
         }
 
@@ -97,7 +82,6 @@ const registerConversationHandlers = (socket, { emitToUser, io }) => {
             });
           }
 
-          console.log("✅ Group message:status broadcast to room");
           return;
         }
 
@@ -114,10 +98,6 @@ const registerConversationHandlers = (socket, { emitToUser, io }) => {
             createdAt: { $lte: pivotMessage.createdAt },
           },
           { $set: { status: "read", seenAt } },
-        );
-
-        console.log(
-          `📨 Marked ${messageUpdateResult.modifiedCount} messages as read`,
         );
 
         // Backfill deliveredAt on any that skipped straight from "sent" to "read"
@@ -143,11 +123,8 @@ const registerConversationHandlers = (socket, { emitToUser, io }) => {
         if (senderId) {
           await emitToUser(senderId, "message:status", statusPayload);
         }
-
-        console.log("✅ Message status updates sent to both participants");
       } catch (err) {
-        console.error("❌ conversation:seen error:", err.message);
-        console.error(err.stack);
+        console.error(`conversation:seen error (${conversationId}, user: ${socket.userId}):`, err.message);
       }
     },
   );

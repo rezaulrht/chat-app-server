@@ -10,8 +10,6 @@ const {
   verifyOTP,
   resendOTP,
   uploadBanner,
-  connectGitHub,
-  disconnectProvider,
 } = require("../controllers/auth.controller");
 const auth = require("../middleware/auth.middleware");
 const upload = require("../middleware/upload.middleware");
@@ -79,13 +77,5 @@ router.patch("/change-password", auth, changePassword);
 // @route   PATCH /auth/me/banner
 // @desc    Upload and set user banner with crop data
 router.patch("/me/banner", auth, upload.single("image"), uploadBanner);
-
-// @route   POST /auth/me/connect/github
-// @desc    Link GitHub account to current user
-router.post("/me/connect/github", auth, connectGitHub);
-
-// @route   DELETE /auth/me/connect/:provider
-// @desc    Disconnect a social provider from current user
-router.delete("/me/connect/:provider", auth, disconnectProvider);
 
 module.exports = router;
