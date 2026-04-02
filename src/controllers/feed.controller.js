@@ -4,6 +4,7 @@ const Comment = require("../models/Comment");
 const User = require("../models/User");
 const NotificationService = require("../services/notification.service");
 const createHelpers = require("../socket/helpers");
+const { awardReputation } = require("../utility/reputation");
 
 const FEED_REPUTATION = {
   POST_CREATE: 3,
@@ -59,7 +60,7 @@ const getIo = (req) => req.app.get("io");
  */
 const emitReputationUpdated = (io, userId) => {
   try {
-    io.emit("feed:reputation:updated", { userId: String(userId) });
+    io.to(`user:${String(userId)}`).emit("feed:reputation:updated", { userId: String(userId) });
   } catch (_) {}
 };
 
@@ -436,19 +437,10 @@ exports.createPost = async (req, res) => {
 
     // Grant reputation for publishing a post (non-fatal)
     try {
-      await User.findByIdAndUpdate(userId, [
-        {
-          $set: {
-            reputation: { $add: ["$reputation", FEED_REPUTATION.POST_CREATE] },
-          },
-        },
-      ]);
+      await awardReputation(userId, FEED_REPUTATION.POST_CREATE);
       emitReputationUpdated(io, userId);
     } catch (repErr) {
-      console.warn(
-        "createPost: reputation update failed (non-fatal):",
-        repErr.message,
-      );
+      console.warn("createPost: reputation update failed (non-fatal):", repErr.message);
     }
 
     res.status(201).json(post);
@@ -838,20 +830,10 @@ exports.reactToPost = async (req, res) => {
         const repDelta = alreadyReacted
           ? -FEED_REPUTATION.POST_REACTION
           : FEED_REPUTATION.POST_REACTION;
-        // Aggregation-pipeline update ensures reputation never falls below 0
-        await User.findByIdAndUpdate(fullPost.author, [
-          {
-            $set: {
-              reputation: { $max: [0, { $add: ["$reputation", repDelta] }] },
-            },
-          },
-        ]);
+        await awardReputation(fullPost.author, repDelta);
         emitReputationUpdated(io, fullPost.author);
       } catch (repErr) {
-        console.warn(
-          "reactToPost: reputation update failed (non-fatal):",
-          repErr.message,
-        );
+        console.warn("reactToPost: reputation update failed (non-fatal):", repErr.message);
       }
     }
 
@@ -1211,20 +1193,10 @@ exports.reactToComment = async (req, res) => {
         const repDelta = alreadyReacted
           ? -FEED_REPUTATION.COMMENT_REACTION
           : FEED_REPUTATION.COMMENT_REACTION;
-        // Aggregation-pipeline update ensures reputation never falls below 0
-        await User.findByIdAndUpdate(comment.author, [
-          {
-            $set: {
-              reputation: { $max: [0, { $add: ["$reputation", repDelta] }] },
-            },
-          },
-        ]);
+        await awardReputation(comment.author, repDelta);
         emitReputationUpdated(getIo(req), comment.author);
       } catch (repErr) {
-        console.warn(
-          "reactToComment: reputation update failed (non-fatal):",
-          repErr.message,
-        );
+        console.warn("reactToComment: reputation update failed (non-fatal):", repErr.message);
       }
     }
 
@@ -1302,20 +1274,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
           acceptedComment: null,
           status: "open",
         }).session(session);
-        await User.findByIdAndUpdate(comment.author, [
-          {
-            $set: {
-              reputation: {
-                $max: [
-                  0,
-                  {
-                    $subtract: ["$reputation", FEED_REPUTATION.ACCEPTED_ANSWER],
-                  },
-                ],
-              },
-            },
-          },
-        ]).session(session);
+        await awardReputation(comment.author, -FEED_REPUTATION.ACCEPTED_ANSWER);
 
         await session.commitTransaction();
         getIo(req).to(`feed:post:${postId}`).emit("feed:answer:accepted", {
@@ -1335,23 +1294,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
           { new: true },
         ).session(session);
         if (previousComment) {
-          await User.findByIdAndUpdate(previousComment.author, [
-            {
-              $set: {
-                reputation: {
-                  $max: [
-                    0,
-                    {
-                      $subtract: [
-                        "$reputation",
-                        FEED_REPUTATION.ACCEPTED_ANSWER,
-                      ],
-                    },
-                  ],
-                },
-              },
-            },
-          ]).session(session);
+          await awardReputation(previousComment.author, -FEED_REPUTATION.ACCEPTED_ANSWER);
         }
       }
 
@@ -1363,15 +1306,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
         acceptedComment: commentId,
         status: "resolved",
       }).session(session);
-      await User.findByIdAndUpdate(comment.author, [
-        {
-          $set: {
-            reputation: {
-              $add: ["$reputation", FEED_REPUTATION.ACCEPTED_ANSWER],
-            },
-          },
-        },
-      ]).session(session);
+      await awardReputation(comment.author, FEED_REPUTATION.ACCEPTED_ANSWER);
 
       await session.commitTransaction();
 
