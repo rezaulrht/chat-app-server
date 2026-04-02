@@ -54,8 +54,7 @@ const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const getIo = (req) => req.app.get("io");
 
 /**
- * Broadcast a lightweight event so every connected client (leaderboard sidebar,
- * profile cards, etc.) knows to re-fetch reputation data for this user.
+ * Emit a reputation-updated event to the affected user's socket room only.
  * Non-fatal — wrapped in try/catch so it never breaks the request.
  */
 const emitReputationUpdated = (io, userId) => {
@@ -1086,6 +1085,7 @@ exports.deleteComment = async (req, res) => {
       ).select("author");
       if (acceptedAuthor) {
         await awardReputation(acceptedAuthor.author, -FEED_REPUTATION.ACCEPTED_ANSWER);
+        emitReputationUpdated(getIo(req), acceptedAuthor.author);
       }
       await Post.findByIdAndUpdate(post._id, {
         acceptedComment: null,
@@ -1270,7 +1270,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
           acceptedComment: null,
           status: "open",
         }).session(session);
-        await awardReputation(comment.author, -FEED_REPUTATION.ACCEPTED_ANSWER);
+        await awardReputation(comment.author, -FEED_REPUTATION.ACCEPTED_ANSWER, { session });
 
         await session.commitTransaction();
         getIo(req).to(`feed:post:${postId}`).emit("feed:answer:accepted", {
@@ -1290,7 +1290,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
           { new: true },
         ).session(session);
         if (previousComment) {
-          await awardReputation(previousComment.author, -FEED_REPUTATION.ACCEPTED_ANSWER);
+          await awardReputation(previousComment.author, -FEED_REPUTATION.ACCEPTED_ANSWER, { session });
         }
       }
 
@@ -1302,7 +1302,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
         acceptedComment: commentId,
         status: "resolved",
       }).session(session);
-      await awardReputation(comment.author, FEED_REPUTATION.ACCEPTED_ANSWER);
+      await awardReputation(comment.author, FEED_REPUTATION.ACCEPTED_ANSWER, { session });
 
       await session.commitTransaction();
 
