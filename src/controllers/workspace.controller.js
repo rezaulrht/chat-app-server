@@ -720,8 +720,7 @@ exports.getWorkspaceByInvite = async (req, res) => {
   try {
     const { inviteCode } = req.params;
     const workspace = await Workspace.findOne({ inviteCode })
-      .select("name avatar description members inviteCodeExpiresAt")
-      .populate("members.user", "name avatar email banner statusMessage");
+      .select("name avatar description members inviteCodeExpiresAt");
 
     if (!workspace) {
       return res.status(404).json({ message: "Invalid or expired invite link" });

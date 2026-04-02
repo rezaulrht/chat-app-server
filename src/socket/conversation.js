@@ -124,7 +124,7 @@ const registerConversationHandlers = (socket, { emitToUser, io }) => {
           await emitToUser(senderId, "message:status", statusPayload);
         }
       } catch (err) {
-        console.error("conversation:seen error:", err.message);
+        console.error(`conversation:seen error (${conversationId}, user: ${socket.userId}):`, err.message);
       }
     },
   );

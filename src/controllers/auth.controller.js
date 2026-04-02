@@ -216,22 +216,15 @@ exports.login = async (req, res) => {
 // @desc OAuth Callback
 exports.oauthCallback = async (req, res) => {
   try {
-    // Handle OAuth cancellation/denial
-    const error = req.query.error;
-    const errorDescription = req.query.error_description || req.query.error_message;
-    
-    if (error === "access_denied" || error === "cancelled") {
-      // User cancelled the OAuth flow
-      return res.redirect(`${process.env.SITE_URL}/profile?tab=connections&cancelled=true`);
-    }
-    
     // Check if this is a social account linking flow using new OAuth state validation
     const state = req.query.state;
     let isLinking = false;
     let linkUserId = null;
     let linkingProvider = null;
+    let stateProvided = false;
     
     if (state) {
+      stateProvided = true;
       const { validateOAuthLinkState } = require("../utils/oauthState");
       const validation = await validateOAuthLinkState(state);
       
@@ -239,6 +232,23 @@ exports.oauthCallback = async (req, res) => {
         isLinking = true;
         linkUserId = validation.data.userId;
         linkingProvider = validation.data.provider;
+      } else if (validation.valid === false) {
+        // State was provided but invalid/expired - abort immediately
+        return res.redirect(`${process.env.SITE_URL}/profile?tab=connections&error=link_invalid`);
+      }
+    }
+    
+    // Handle OAuth cancellation/denial
+    const error = req.query.error;
+    const errorDescription = req.query.error_description || req.query.error_message;
+    
+    if (error === "access_denied" || error === "cancelled") {
+      if (isLinking) {
+        // User cancelled the account linking flow
+        return res.redirect(`${process.env.SITE_URL}/profile?tab=connections&cancelled=true`);
+      } else {
+        // Normal login failure - redirect to sign-in
+        return res.redirect(`${process.env.SITE_URL}/login?error=oauth_denied`);
       }
     }
     
@@ -251,23 +261,20 @@ exports.oauthCallback = async (req, res) => {
         return res.redirect(`${process.env.SITE_URL}/login-error?message=User not found`);
       }
       
-      // Get provider info from passport - be more robust in detecting provider
+      // Get provider info from passport - use req.oauthProfile if available
       let provider = linkingProvider;
       let providerId = null;
       let providerUsername = null;
       
-      // Try to determine provider from passport profile
-      if (req.user.google && req.user.google.id) {
-        provider = "google";
-        providerId = req.user.google.id;
-        providerUsername = req.user.displayName || req.user.google.displayName || "";
-      } else if (req.user.github && req.user.github.id) {
-        provider = "github";
-        providerId = req.user.github.id;
-        providerUsername = req.user.username || req.user.displayName || "";
+      const oauthProfile = req.oauthProfile || req.user?.oauthProfile;
+      
+      if (oauthProfile && oauthProfile.provider) {
+        provider = oauthProfile.provider;
+        providerId = oauthProfile.providerId;
+        providerUsername = oauthProfile.username || oauthProfile.displayName || "";
       } else if (req.user.id) {
         // Fallback: try to guess from the OAuth response
-        provider = linkingProvider || "github"; // default to github if can't determine
+        provider = linkingProvider || "github";
         providerId = req.user.id;
         providerUsername = req.user.displayName || req.user.username || "";
       }

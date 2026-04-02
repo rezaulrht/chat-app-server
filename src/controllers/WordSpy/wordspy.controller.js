@@ -94,12 +94,12 @@ Return ONLY valid JSON, no markdown:
   try {
     raw = await openRouterPost([{ role: "user", content: prompt }], 5000, 0.8);
   } catch (firstErr) {
-    console.error("WordSpy AI first attempt failed:", firstErr?.response?.status);
+    console.error("WordSpy AI first attempt failed:", firstErr?.response?.status, firstErr?.message || String(firstErr));
     // Retry once
     try {
       raw = await openRouterPost([{ role: "user", content: prompt }], 5000, 0.8);
     } catch (retryErr) {
-      console.error("WordSpy AI retry also failed:", retryErr?.response?.status);
+      console.error("WordSpy AI retry also failed:", retryErr?.response?.status, retryErr?.message || String(retryErr));
       const fallback = pickFallbackWordPair(category, difficulty);
       return {
         realWord: fallback.realWord,

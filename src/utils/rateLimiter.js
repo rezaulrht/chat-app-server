@@ -24,10 +24,14 @@ async function checkRateLimit(key, windowMs = RATE_LIMIT_WINDOW, maxRequests = M
       // Use Redis for distributed rate limiting
       const stored = await redisClient.get(windowKey);
       if (stored) {
-        const data = JSON.parse(stored);
-        if (now < data.resetAt) {
-          requestCount = data.count;
-          resetAt = data.resetAt;
+        try {
+          const data = JSON.parse(stored);
+          if (data && typeof data === 'object' && typeof data.count === 'number' && typeof data.resetAt === 'number' && data.resetAt > now) {
+            requestCount = data.count;
+            resetAt = data.resetAt;
+          }
+        } catch (parseErr) {
+          // Malformed data - ignore stored value
         }
       }
       
@@ -36,10 +40,11 @@ async function checkRateLimit(key, windowMs = RATE_LIMIT_WINDOW, maxRequests = M
       const isLimited = newCount > maxRequests;
       
       if (!isLimited) {
+        const chosenResetAt = resetAt ?? (now + windowMs);
         await redisClient.setEx(
           windowKey,
-          Math.ceil(windowMs / 1000),
-          JSON.stringify({ count: newCount, resetAt: now + windowMs })
+          Math.ceil((chosenResetAt - now) / 1000),
+          JSON.stringify({ count: newCount, resetAt: chosenResetAt })
         );
       }
       
@@ -67,9 +72,11 @@ async function checkRateLimit(key, windowMs = RATE_LIMIT_WINDOW, maxRequests = M
   const isLimited = newCount > maxRequests;
   
   if (!isLimited) {
+    const existing = rateLimitMap.get(key);
+    const resetAtValue = existing?.resetAt ?? (now + windowMs);
     rateLimitMap.set(key, {
       count: newCount,
-      resetAt: now + windowMs
+      resetAt: resetAtValue
     });
   }
   
@@ -85,14 +92,14 @@ async function checkRateLimit(key, windowMs = RATE_LIMIT_WINDOW, maxRequests = M
  * @param {object} options - Rate limit options
  * @param {number} options.windowMs - Time window in milliseconds
  * @param {number} options.maxRequests - Maximum requests allowed
- * @param {string} options.keyGenerator - Function to generate rate limit key
+ * @param {function} options.keyGenerator - Function to generate rate limit key
  * @param {string} options.message - Error message when rate limited
  */
 function createRateLimiter(options = {}) {
   const {
     windowMs = RATE_LIMIT_WINDOW,
     maxRequests = MAX_REQUESTS_PER_WINDOW,
-    keyGenerator = (req) => req.ip || req.connection.remoteAddress || 'unknown',
+    keyGenerator = (req) => req.ip || req.socket?.remoteAddress || 'unknown',
     message = "Too many requests, please try again later."
   } = options;
   
@@ -126,7 +133,7 @@ function createRateLimiter(options = {}) {
 }
 
 // Cleanup old entries periodically
-setInterval(() => {
+const cleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [key, value] of rateLimitMap.entries()) {
     if (now > value.resetAt) {
@@ -134,6 +141,7 @@ setInterval(() => {
     }
   }
 }, 5 * 60 * 1000); // Clean every 5 minutes
+cleanupInterval.unref();
 
 module.exports = {
   checkRateLimit,

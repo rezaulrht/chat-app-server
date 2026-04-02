@@ -41,7 +41,7 @@ async function createOAuthLinkState(userId, provider) {
 
   // Generate the OAuth URL
   const baseUrl = process.env.BASE_URL || "http://localhost:5000";
-  const callbackUrl = `${baseUrl}/api/auth/${provider}/callback`;
+  const callbackUrl = `${baseUrl}/auth/${provider}/callback`;
   let authUrl;
 
   if (provider === "google") {
@@ -72,14 +72,12 @@ async function validateOAuthLinkState(state) {
   // Try Redis first
   if (getIsRedisConnected()) {
     try {
-      const stored = await redisClient.get(`${LINK_STATE_PREFIX}${state}`);
+      const stored = await redisClient.GETDEL(`${LINK_STATE_PREFIX}${state}`);
       if (stored) {
         stateData = JSON.parse(stored);
-        // Delete after use (one-time use)
-        await redisClient.del(`${LINK_STATE_PREFIX}${state}`);
       }
     } catch (err) {
-      console.error("Redis get error for OAuth state:", err.message);
+      console.error("Redis GETDEL error for OAuth state:", err.message);
     }
   }
 
