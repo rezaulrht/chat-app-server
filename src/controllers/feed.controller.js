@@ -83,7 +83,7 @@ const checkPostAccess = async (postId, userId) => {
     return { error: { status: 400, message: "Invalid post ID" } };
   }
 
-  const post = await Post.findById(postId).select("_id author isPrivate");
+  const post = await Post.findById(postId).select("_id author isPrivate reactions");
   if (!post) {
     return { error: { status: 404, message: "Post not found" } };
   }
