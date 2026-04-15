@@ -9,6 +9,7 @@ const {
   updatePost,
   deletePost,
   reactToPost,
+  getPostReactions,
   votePoll,
   toggleAcceptedAnswer,
 } = require("../controllers/feed.controller");
@@ -32,6 +33,9 @@ router.delete("/:id", deletePost);
 
 // @route   POST /api/feed/posts/:id/react
 router.post("/:id/react", reactToPost);
+
+// @route   GET /api/feed/posts/:id/reactions
+router.get("/:id/reactions", getPostReactions);
 
 // @route   POST /api/feed/posts/:id/poll-vote
 router.post("/:id/poll-vote", votePoll);
