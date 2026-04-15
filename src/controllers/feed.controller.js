@@ -427,7 +427,7 @@ exports.createPost = async (req, res) => {
     const io = getIo(req);
     // Only emit to global feed if post is public
     if (!post.isPrivate) {
-      io.emit("feed:post:created", { post });
+      io.to("feed:global").emit("feed:post:created", { post });
     }
     io.to(`feed:user:${userId}`).emit("feed:user:post-created", {
       authorId: userId,
@@ -481,6 +481,9 @@ exports.updatePost = async (req, res) => {
     await post.save();
     await post.populate("author", "name avatar reputation");
 
+    const io = getIo(req);
+    io.to(`feed:post:${id}`).emit("feed:post:updated", { post });
+
     res.json(post);
   } catch (err) {
     console.error("updatePost error:", err.message);
@@ -519,6 +522,7 @@ exports.deletePost = async (req, res) => {
 
     const io = getIo(req);
     io.to(`feed:post:${id}`).emit("feed:post:deleted", { postId: id });
+    io.to("feed:global").emit("feed:post:deleted", { postId: id });
 
     res.json({ message: "Deleted" });
   } catch (err) {
@@ -818,7 +822,7 @@ exports.reactToPost = async (req, res) => {
       reactions: reactionsObj,
       reactionCount: fullPost.reactionCount,
     });
-    io.emit("feed:post:reaction-updated", {
+    io.to("feed:global").emit("feed:post:reaction-updated", {
       postId: id,
       reactionCount: fullPost.reactionCount,
     });
@@ -1036,6 +1040,9 @@ exports.updateComment = async (req, res) => {
     comment.content = String(content).trim();
     await comment.save();
     await comment.populate("author", "name avatar reputation");
+
+    const io = getIo(req);
+    io.to(`feed:post:${comment.post.toString()}`).emit("feed:comment:updated", { comment });
 
     return res.json(comment);
   } catch (err) {
