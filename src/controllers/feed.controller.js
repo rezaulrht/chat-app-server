@@ -4,6 +4,7 @@ const Comment = require("../models/Comment");
 const User = require("../models/User");
 const NotificationService = require("../services/notification.service");
 const createHelpers = require("../socket/helpers");
+const { awardReputation } = require("../utility/reputation");
 
 const FEED_REPUTATION = {
   POST_CREATE: 3,
@@ -53,13 +54,12 @@ const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const getIo = (req) => req.app.get("io");
 
 /**
- * Broadcast a lightweight event so every connected client (leaderboard sidebar,
- * profile cards, etc.) knows to re-fetch reputation data for this user.
+ * Emit a reputation-updated event to the affected user's socket room only.
  * Non-fatal — wrapped in try/catch so it never breaks the request.
  */
 const emitReputationUpdated = (io, userId) => {
   try {
-    io.emit("feed:reputation:updated", { userId: String(userId) });
+    io.to(`user:${String(userId)}`).emit("feed:reputation:updated", { userId: String(userId) });
   } catch (_) {}
 };
 
@@ -83,7 +83,7 @@ const checkPostAccess = async (postId, userId) => {
     return { error: { status: 400, message: "Invalid post ID" } };
   }
 
-  const post = await Post.findById(postId).select("_id author isPrivate");
+  const post = await Post.findById(postId).select("_id author isPrivate reactions");
   if (!post) {
     return { error: { status: 404, message: "Post not found" } };
   }
@@ -436,19 +436,10 @@ exports.createPost = async (req, res) => {
 
     // Grant reputation for publishing a post (non-fatal)
     try {
-      await User.findByIdAndUpdate(userId, [
-        {
-          $set: {
-            reputation: { $add: ["$reputation", FEED_REPUTATION.POST_CREATE] },
-          },
-        },
-      ]);
+      await awardReputation(userId, FEED_REPUTATION.POST_CREATE);
       emitReputationUpdated(io, userId);
     } catch (repErr) {
-      console.warn(
-        "createPost: reputation update failed (non-fatal):",
-        repErr.message,
-      );
+      console.warn("createPost: reputation update failed (non-fatal):", repErr.message);
     }
 
     res.status(201).json(post);
@@ -838,20 +829,10 @@ exports.reactToPost = async (req, res) => {
         const repDelta = alreadyReacted
           ? -FEED_REPUTATION.POST_REACTION
           : FEED_REPUTATION.POST_REACTION;
-        // Aggregation-pipeline update ensures reputation never falls below 0
-        await User.findByIdAndUpdate(fullPost.author, [
-          {
-            $set: {
-              reputation: { $max: [0, { $add: ["$reputation", repDelta] }] },
-            },
-          },
-        ]);
+        await awardReputation(fullPost.author, repDelta);
         emitReputationUpdated(io, fullPost.author);
       } catch (repErr) {
-        console.warn(
-          "reactToPost: reputation update failed (non-fatal):",
-          repErr.message,
-        );
+        console.warn("reactToPost: reputation update failed (non-fatal):", repErr.message);
       }
     }
 
@@ -995,9 +976,7 @@ exports.createComment = async (req, res) => {
       );
       // Only increment reputation if the conditional update succeeded
       if (updated) {
-        await User.findByIdAndUpdate(fullPost.author, {
-          $inc: { reputation: FEED_REPUTATION.QUESTION_BONUS },
-        });
+        await awardReputation(fullPost.author, FEED_REPUTATION.QUESTION_BONUS);
         emitReputationUpdated(getIo(req), fullPost.author);
       }
     }
@@ -1105,9 +1084,8 @@ exports.deleteComment = async (req, res) => {
         post.acceptedComment,
       ).select("author");
       if (acceptedAuthor) {
-        await User.findByIdAndUpdate(acceptedAuthor.author, {
-          $inc: { reputation: -FEED_REPUTATION.ACCEPTED_ANSWER },
-        });
+        await awardReputation(acceptedAuthor.author, -FEED_REPUTATION.ACCEPTED_ANSWER);
+        emitReputationUpdated(getIo(req), acceptedAuthor.author);
       }
       await Post.findByIdAndUpdate(post._id, {
         acceptedComment: null,
@@ -1211,20 +1189,10 @@ exports.reactToComment = async (req, res) => {
         const repDelta = alreadyReacted
           ? -FEED_REPUTATION.COMMENT_REACTION
           : FEED_REPUTATION.COMMENT_REACTION;
-        // Aggregation-pipeline update ensures reputation never falls below 0
-        await User.findByIdAndUpdate(comment.author, [
-          {
-            $set: {
-              reputation: { $max: [0, { $add: ["$reputation", repDelta] }] },
-            },
-          },
-        ]);
+        await awardReputation(comment.author, repDelta);
         emitReputationUpdated(getIo(req), comment.author);
       } catch (repErr) {
-        console.warn(
-          "reactToComment: reputation update failed (non-fatal):",
-          repErr.message,
-        );
+        console.warn("reactToComment: reputation update failed (non-fatal):", repErr.message);
       }
     }
 
@@ -1302,20 +1270,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
           acceptedComment: null,
           status: "open",
         }).session(session);
-        await User.findByIdAndUpdate(comment.author, [
-          {
-            $set: {
-              reputation: {
-                $max: [
-                  0,
-                  {
-                    $subtract: ["$reputation", FEED_REPUTATION.ACCEPTED_ANSWER],
-                  },
-                ],
-              },
-            },
-          },
-        ]).session(session);
+        await awardReputation(comment.author, -FEED_REPUTATION.ACCEPTED_ANSWER, { session });
 
         await session.commitTransaction();
         getIo(req).to(`feed:post:${postId}`).emit("feed:answer:accepted", {
@@ -1328,6 +1283,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
       }
 
       // Clear previous accepted answer if exists
+      let previousAnswerAuthorId = null;
       if (previouslyAcceptedId) {
         const previousComment = await Comment.findByIdAndUpdate(
           previouslyAcceptedId,
@@ -1335,23 +1291,8 @@ exports.toggleAcceptedAnswer = async (req, res) => {
           { new: true },
         ).session(session);
         if (previousComment) {
-          await User.findByIdAndUpdate(previousComment.author, [
-            {
-              $set: {
-                reputation: {
-                  $max: [
-                    0,
-                    {
-                      $subtract: [
-                        "$reputation",
-                        FEED_REPUTATION.ACCEPTED_ANSWER,
-                      ],
-                    },
-                  ],
-                },
-              },
-            },
-          ]).session(session);
+          await awardReputation(previousComment.author, -FEED_REPUTATION.ACCEPTED_ANSWER, { session });
+          previousAnswerAuthorId = previousComment.author;
         }
       }
 
@@ -1363,15 +1304,7 @@ exports.toggleAcceptedAnswer = async (req, res) => {
         acceptedComment: commentId,
         status: "resolved",
       }).session(session);
-      await User.findByIdAndUpdate(comment.author, [
-        {
-          $set: {
-            reputation: {
-              $add: ["$reputation", FEED_REPUTATION.ACCEPTED_ANSWER],
-            },
-          },
-        },
-      ]).session(session);
+      await awardReputation(comment.author, FEED_REPUTATION.ACCEPTED_ANSWER, { session });
 
       await session.commitTransaction();
 
@@ -1381,6 +1314,9 @@ exports.toggleAcceptedAnswer = async (req, res) => {
         resolved: true,
       });
       emitReputationUpdated(getIo(req), comment.author);
+      if (previousAnswerAuthorId) {
+        emitReputationUpdated(getIo(req), previousAnswerAuthorId);
+      }
 
       // ── Notification ─────────────────────────────────────────────
       if (comment.author.toString() !== userId) {
@@ -1634,6 +1570,113 @@ exports.searchFeed = async (req, res) => {
     });
   } catch (err) {
     console.error("searchFeed error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/feed/posts/:id/reactions
+// Returns reactions map with user IDs populated to { _id, name, avatar }.
+// ---------------------------------------------------------------------------
+exports.getPostReactions = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    const access = await checkPostAccess(id, userId);
+    if (access.error) {
+      return res.status(access.error.status).json({ message: access.error.message });
+    }
+    const post = access.post;
+
+    if (!post.reactions || post.reactions.size === 0) {
+      return res.json({ reactions: {}, total: 0 });
+    }
+
+    // Collect all unique reactor IDs
+    const allUserIds = new Set();
+    for (const users of post.reactions.values()) {
+      for (const uid of users) allUserIds.add(uid.toString());
+    }
+
+    // Batch-fetch user details
+    const users = await User.find(
+      { _id: { $in: [...allUserIds] } },
+      "name avatar"
+    ).lean();
+    const userMap = Object.fromEntries(
+      users.map((u) => [u._id.toString(), { _id: u._id, name: u.name, avatar: u.avatar }])
+    );
+
+    // Build populated map, drop emojis with no valid reactors
+    const populated = {};
+    let total = 0;
+    for (const [emoji, uids] of post.reactions.entries()) {
+      const reactors = uids.map((uid) => userMap[uid.toString()]).filter(Boolean);
+      if (reactors.length > 0) {
+        populated[emoji] = reactors;
+        total += reactors.length;
+      }
+    }
+
+    return res.json({ reactions: populated, total });
+  } catch (err) {
+    console.error("getPostReactions error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/feed/comments/:id/reactions
+// ---------------------------------------------------------------------------
+exports.getCommentReactions = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Comment not found" });
+    }
+
+    const comment = await Comment.findById(id);
+    if (!comment) return res.status(404).json({ message: "Comment not found" });
+
+    // Check the parent post for privacy
+    const access = await checkPostAccess(comment.post.toString(), userId);
+    if (access.error) {
+      return res.status(access.error.status).json({ message: access.error.message });
+    }
+
+    if (!comment.reactions || comment.reactions.size === 0) {
+      return res.json({ reactions: {}, total: 0 });
+    }
+
+    const allUserIds = new Set();
+    for (const users of comment.reactions.values()) {
+      for (const uid of users) allUserIds.add(uid.toString());
+    }
+
+    const users = await User.find(
+      { _id: { $in: [...allUserIds] } },
+      "name avatar"
+    ).lean();
+    const userMap = Object.fromEntries(
+      users.map((u) => [u._id.toString(), { _id: u._id, name: u.name, avatar: u.avatar }])
+    );
+
+    const populated = {};
+    let total = 0;
+    for (const [emoji, uids] of comment.reactions.entries()) {
+      const reactors = uids.map((uid) => userMap[uid.toString()]).filter(Boolean);
+      if (reactors.length > 0) {
+        populated[emoji] = reactors;
+        total += reactors.length;
+      }
+    }
+
+    return res.json({ reactions: populated, total });
+  } catch (err) {
+    console.error("getCommentReactions error:", err.message);
     return res.status(500).json({ message: "Server error" });
   }
 };
