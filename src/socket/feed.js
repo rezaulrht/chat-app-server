@@ -65,4 +65,12 @@ module.exports = function registerFeedHandlers(socket) {
       socket.leave(`feed:post:${postId}`);
     }
   });
+
+  socket.on("feed:global:join", () => {
+    socket.join("feed:global");
+  });
+
+  socket.on("feed:global:leave", () => {
+    socket.leave("feed:global");
+  });
 };
